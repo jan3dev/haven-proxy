@@ -1,0 +1,38 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "haven": {
+      "npm": "github:jan3dev/haven-proxy",
+      "name": "Haven",
+      "options": {
+        "apiKey": "{env:HAVEN_API_KEY}"
+      },
+      "models": {
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Haven)",
+          "limit": { "context": 131072, "output": 32768 }
+        },
+        "kimi-k2-6": {
+          "name": "Kimi K2.6 (Haven)",
+          "limit": { "context": 200000, "output": 65536 }
+        },
+        "glm-5-2": {
+          "name": "GLM-5.2 (Haven)",
+          "limit": { "context": 200000, "output": 65536 }
+        },
+        "gemma4-31b": {
+          "name": "Gemma 4 31B (Haven)",
+          "limit": { "context": 131072, "output": 32768 }
+        },
+        "llama3-3-70b": {
+          "name": "Llama 3.3 70B (Haven)",
+          "limit": { "context": 131072, "output": 32768 }
+        },
+        "qwen3-vl-30b": {
+          "name": "Qwen3-VL 30B (Haven)",
+          "limit": { "context": 131072, "output": 32768 }
+        }
+      }
+    }
+  }
+}
