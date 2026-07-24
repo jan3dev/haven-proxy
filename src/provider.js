@@ -23,6 +23,7 @@
 //   }
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createSecureRelay, sseLinesFor } from "./relay.js";
+import { loadConfig } from "./config.js";
 
 function decodeBody(body) {
   if (body == null) return {};
@@ -46,16 +47,40 @@ function errorResponse(error) {
  * Create a Haven provider for the Vercel AI SDK / OpenCode.
  *
  * @param {object} options
- * @param {string} options.baseURL - Haven origin incl. the API path, e.g.
+ * @param {string} [options.baseURL] - Haven origin incl. the API path, e.g.
  *   `https://your-ankara-host/api/v1/haven` (the client posts to `<baseURL>/chat/completions`).
- * @param {string} options.apiKey - Your `hvn1_…` Haven key (sent as `X-Api-Key`).
+ *   Falls back to HAVEN_BASE_URL / the saved config origin + `/api/v1/haven`.
+ * @param {string} [options.apiKey] - Your `hvn1_…` Haven key (sent as `X-Api-Key`).
+ *   Falls back to HAVEN_API_KEY, then the key saved by `haven-proxy login`.
  * @param {string} [options.name] - Provider id (OpenCode passes its provider id here).
  * @param {number} [options.timeoutMs] - Upstream deadline per request (default 300 000 ms).
  */
-const DEFAULT_BASE_URL = "https://ankara.aquabtc.com/api/v1/haven";
-
 export function createHaven(options = {}) {
-  const { baseURL = DEFAULT_BASE_URL, apiKey = "", name = "haven", timeoutMs } = options;
+  const { name = "haven", timeoutMs } = options;
+
+  // OpenCode substitutes "{env:HAVEN_API_KEY}" with "" when the variable is
+  // unset; an unresolved "{env:…}"/"{file:…}" literal means substitution never
+  // ran. Treat both as absent and fall back to the CLI's credential store,
+  // matching its resolution order: options → env var → ~/.haven-proxy/config.json.
+  const isUnresolvedTemplate = (v) => typeof v === "string" && /^\{(env|file):[^}]*\}$/.test(v);
+  let apiKey = isUnresolvedTemplate(options.apiKey) ? "" : options.apiKey || "";
+  let baseURL = isUnresolvedTemplate(options.baseURL) ? "" : options.baseURL || "";
+
+  if (!apiKey || !baseURL) {
+    // loadConfig applies HAVEN_API_KEY / HAVEN_BASE_URL env overrides itself.
+    // cfg.baseURL is the bare origin; the provider needs the full API path.
+    const { cfg } = loadConfig();
+    if (!apiKey) apiKey = cfg.apiKey;
+    if (!baseURL) baseURL = `${cfg.baseURL.replace(/\/+$/, "")}/api/v1/haven`;
+  }
+
+  if (!apiKey) {
+    const msg =
+      "Haven API key is missing. Run `haven-proxy login` (or `npx github:jan3dev/haven-proxy login`), " +
+      "or set HAVEN_API_KEY in your environment, then restart OpenCode.";
+    console.error(`[haven-proxy] ${msg}`);
+    throw new Error(msg);
+  }
 
   const havenApiRoot = baseURL.replace(/\/+$/, "");
   const relay = createSecureRelay({ havenApiRoot, apiKey, timeoutMs });
