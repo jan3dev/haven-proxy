@@ -229,7 +229,13 @@ so no balance is spent on output nobody reads. Each request also has an upstream
 timeout, a near-empty key may briefly answer 409 (`request_in_progress`) until Haven notices the
 dropped request — just retry.
 - **Errors** are mapped to OpenAI-shaped error bodies. An empty balance surfaces as HTTP 402 with a
-"top up" message.
+"top up" message; upstream rate limits surface as 429 and forward Haven's `Retry-After`; bad
+params / unknown model (enclave 400/404) surface the enclave's own message so the failure is
+actionable instead of a generic 502.
+- **Enclave key rotation heals automatically.** When the enclave rotates its HPKE key, requests
+encrypted to the old key fail (EHBP 422 `key-config`, which Haven wraps as an upstream error). The
+relay detects that shape, drops its cached attestation, and retries once against the current key —
+so long-lived sessions survive rotations without a restart.
 - **Tool calls, content, and reasoning_content** are reconstructed into stream deltas so agentic use
 (OpenCode's tool loop) works.
 
