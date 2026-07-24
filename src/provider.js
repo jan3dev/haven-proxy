@@ -36,10 +36,12 @@ function decodeBody(body) {
 }
 
 function errorResponse(error) {
-  const { status, message, type, code } = error;
+  const { status, message, type, code, retryAfter } = error;
+  const headers = { "Content-Type": "application/json" };
+  if (retryAfter) headers["Retry-After"] = retryAfter;
   return new Response(JSON.stringify({ error: { message, type, code, param: null } }), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 }
 

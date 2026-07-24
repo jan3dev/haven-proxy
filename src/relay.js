@@ -123,7 +123,11 @@ function ensureFetchWrapper() {
         } catch {
           /* opaque/undecodable error body — status alone still helps */
         }
-        ctx.captured = { status: response.status, payload };
+        ctx.captured = {
+          status: response.status,
+          payload,
+          retryAfter: response.headers.get("retry-after"),
+        };
       }
     } catch {
       /* capture is best-effort bookkeeping; never let it break a real request */
@@ -136,11 +140,49 @@ function ensureFetchWrapper() {
 // status onto an OpenAI-style error descriptor { status, message, type, code }.
 export function classifyHavenError(status, payload = {}) {
   const detail = payload.message || payload.error_code;
-  // Haven wraps any enclave failure as HAVEN_UPSTREAM_ERROR (HTTP 502) and carries
+  // Haven relays the enclave's EHBP problem+json verbatim (it's the SDK's
+  // re-attest-and-retry signal, handled inside SecureClient.fetch). Seeing one
+  // here means that recovery already ran and failed against a fresh key.
+  if (typeof payload.type === "string" && payload.type.startsWith("urn:ietf:params:ehbp:error:")) {
+    const problem = payload.title || payload.detail;
+    return {
+      status: 502,
+      message:
+        `Haven enclave rejected the encrypted request${problem ? ` (${problem})` : ""} even after ` +
+        "re-attesting. Restart the client; if it persists, the enclave may be misbehaving.",
+      type: "api_error",
+      code: "enclave_key_mismatch",
+    };
+  }
+  // Haven wraps any other enclave failure as HAVEN_UPSTREAM_ERROR and carries
   // the enclave's own status in details.status. A 429 there is a real upstream
   // rate limit, not a proxy fault — surface it as such so it's actionable.
   if (payload.error_code === "HAVEN_UPSTREAM_ERROR") {
     const upstreamStatus = payload.details?.status;
+    if (upstreamStatus === 422) {
+      // Pre-passthrough Haven deployments wrap the EHBP signal instead of
+      // relaying it; reaching here means the relay's own reset-and-retry (see
+      // relay()) already failed against a fresh attestation.
+      return {
+        status: 502,
+        message:
+          "Haven enclave rejected the encrypted request (HTTP 422) even after re-attesting. " +
+          "Restart the client; if it persists, the enclave may be misbehaving.",
+        type: "api_error",
+        code: "enclave_key_mismatch",
+      };
+    }
+    // Bad params / unknown model: the enclave's own message is the actionable
+    // part (Haven forwards it, secret-free, as details.upstream_message). Keep
+    // the enclave's 4xx status so clients don't retry a deterministic failure.
+    if ((upstreamStatus === 400 || upstreamStatus === 404) && payload.details?.upstream_message) {
+      return {
+        status: upstreamStatus,
+        message: payload.details.upstream_message,
+        type: "invalid_request_error",
+        code: "upstream_rejected",
+      };
+    }
     if (upstreamStatus === 429) {
       return {
         status: 429,
@@ -297,6 +339,18 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
     }
   }
 
+  // The enclave answers an EHBP request encrypted to a rotated key with a
+  // cleartext 422 problem+json (urn:ietf:params:ehbp:error:key-config). The SDK
+  // recovers from that on its own (KeyConfigMismatchError → reset → re-attest →
+  // retry) — but only when it sees that exact response. Haven wraps enclave
+  // failures as HAVEN_UPSTREAM_ERROR with the real status in details.status,
+  // which the SDK reads as a generic error, so a stale key would otherwise wedge
+  // this process until restart. Haven doesn't say which kind of 422 it was, so a
+  // genuine unprocessable-request 422 costs one harmless extra attempt.
+  const isWrappedStaleKeyError = (outcome) =>
+    outcome?.captured?.payload?.error_code === "HAVEN_UPSTREAM_ERROR" &&
+    outcome.captured.payload.details?.status === 422;
+
   async function relay(body, { signal } = {}) {
     const { wantStream, includeUsage, upstreamBody } = prepareUpstream(body);
 
@@ -327,7 +381,14 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
           if (effective.aborted) return done();
           effective.addEventListener("abort", done, { once: true });
         });
-        return await Promise.race([sendWithCapture(upstreamBody, effective), onAbort]);
+        let result = await Promise.race([sendWithCapture(upstreamBody, effective), onAbort]);
+        if (isWrappedStaleKeyError(result) && !effective.aborted) {
+          // Run the SDK's own rotation recovery by hand, once, within the same
+          // deadline: drop the cached attestation and re-encrypt to the current key.
+          client.reset();
+          result = await Promise.race([sendWithCapture(upstreamBody, effective), onAbort]);
+        }
+        return result;
       } finally {
         clearTimeout(timer);
       }
@@ -359,7 +420,11 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
     }
     if (err) {
       if (captured) {
-        return { ok: false, error: classifyHavenError(captured.status, captured.payload) };
+        const error = classifyHavenError(captured.status, captured.payload);
+        // Haven forwards the enclave's Retry-After on rate limits; keep it on
+        // the descriptor so callers can emit it and clients back off properly.
+        if (captured.retryAfter) error.retryAfter = captured.retryAfter;
+        return { ok: false, error };
       }
       // No captured HTTP response (attestation failure, network, undecodable body).
       // Distinguish the common empty-balance case so the caller gets a clear message.
@@ -395,7 +460,10 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
       } catch {
         /* opaque/undecryptable body — fall back to status alone */
       }
-      return { ok: false, error: classifyHavenError(upstream.status, payload) };
+      const error = classifyHavenError(upstream.status, payload);
+      const retryAfter = upstream.headers.get("retry-after");
+      if (retryAfter) error.retryAfter = retryAfter;
+      return { ok: false, error };
     }
 
     let completion;

@@ -225,7 +225,8 @@ function sendJson(res, status, obj) {
 }
 
 // OpenAI-shaped error envelope so the AI SDK surfaces something readable.
-function sendError(res, status, message, { type = "api_error", code = null } = {}) {
+function sendError(res, status, message, { type = "api_error", code = null, retryAfter } = {}) {
+  if (retryAfter) res.setHeader("Retry-After", retryAfter);
   sendJson(res, status, { error: { message, type, code, param: null } });
 }
 
@@ -267,8 +268,8 @@ async function handleChatCompletions(req, res) {
   const result = await relay.relay(body, { signal: controller.signal });
   if (controller.signal.aborted) return; // client is gone — nothing to write to
   if (!result.ok) {
-    const { status, message, type, code } = result.error;
-    return sendError(res, status, message, { type, code });
+    const { status, message, type, code, retryAfter } = result.error;
+    return sendError(res, status, message, { type, code, retryAfter });
   }
 
   if (result.usage) res.setHeader(USAGE_HEADER, result.usage);

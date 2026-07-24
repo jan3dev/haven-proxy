@@ -13,7 +13,8 @@
     "haven-proxy": "src/index.js"
   },
   "scripts": {
-    "start": "node --env-file=.env src/index.js"
+    "start": "node --env-file=.env src/index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20.6"
