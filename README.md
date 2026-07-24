@@ -118,6 +118,10 @@ here and requests go straight to Haven, encrypted.
 - `options.apiKey` is your `hvn1_…` key, sent as `X-Api-Key`. `{env:HAVEN_API_KEY}` keeps the
 secret out of the file. Because we own the `fetch`, the header is added inside it — sidestepping
 OpenCode's habit of dropping custom headers on custom `baseURL`s.
+- Both options are **optional**: when `apiKey` is empty (e.g. `HAVEN_API_KEY` isn't set in the
+environment OpenCode was launched from), the provider falls back to the credentials saved by
+`haven-proxy login` (`~/.haven-proxy/config.json`) — same resolution order as the CLI. So the
+easiest setup is `npx github:jan3dev/haven-proxy login` once, with no env var at all.
 
 Then pick the `haven/gpt-oss-120b` model in OpenCode.
 
