@@ -79,10 +79,12 @@ export function redactKey(key) {
 export async function promptApiKey() {
   const { createInterface } = await import("node:readline");
   return new Promise((resolve, reject) => {
-    process.stderr.write("Enter Haven API key (hvn1_…): ");
     const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    // Suppress echo so the key isn't visible in the terminal
+    // Suppress echo so the key isn't visible in the terminal.
+    // Set this before writing the prompt so readline's terminal setup is done first —
+    // writing before createInterface can be clobbered by readline's raw-mode init on Windows.
     rl._writeToOutput = () => {};
+    process.stderr.write("Enter Haven API key (hvn1_…): ");
     rl.question("", (answer) => {
       process.stderr.write("\n");
       rl.close();
