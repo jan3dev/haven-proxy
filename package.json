@@ -13,11 +13,11 @@
     "haven-proxy": "src/index.js"
   },
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
+    "start": "node src/index.js",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=20.6"
+    "node": ">=20.12"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.11",

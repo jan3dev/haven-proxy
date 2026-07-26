@@ -31,7 +31,7 @@ OpenCode ──plaintext OpenAI──▶  haven-proxy (localhost:3301)  ──EH
 
 ## Requirements
 
-- Node 20.6+ (the SecureClient SDK needs 20; `AbortSignal.any` requires 20.3; `--env-file` requires 20.6).
+- Node 20.12+ (the SecureClient SDK needs 20; `AbortSignal.any` requires 20.3; `process.loadEnvFile` requires 20.12).
 - A Haven API key (`hvn1_…`) with a positive balance.
 
 
