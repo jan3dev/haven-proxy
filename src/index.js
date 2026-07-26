@@ -11,6 +11,11 @@
 // src/provider.js — it uses the same relay core without any localhost daemon.
 import http from "node:http";
 import { parseArgs } from "node:util";
+
+// Load .env from cwd so `haven-proxy` picks up the same variables as `npm start`
+// (which passes --env-file=.env explicitly). On Windows there is no shell-level
+// equivalent, so without this the binary silently starts with no key.
+try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS, validateKey } from "./relay.js";
 import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL } from "./config.js";
 
