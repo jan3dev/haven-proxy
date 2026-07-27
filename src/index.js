@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 // equivalent, so without this the binary silently starts with no key.
 try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS, validateKey } from "./relay.js";
-import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL } from "./config.js";
+import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider } from "./config.js";
 
 const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
 const DEFAULT_MODELS = "gpt-oss-120b,kimi-k2-6,glm-5-2,gemma4-31b,llama3-3-70b,qwen3-vl-30b";
@@ -72,7 +72,7 @@ if (subcommand === "login") {
   });
   if (values.help) { console.log(HELP); }
   else {
-    let apiKey = values["api-key"] || "";
+    let apiKey = values["api-key"] || process.env.HAVEN_API_KEY || "";
     if (!apiKey) apiKey = await promptApiKey();
     if (!apiKey) {
       console.error("[haven-proxy] API key is required.");
@@ -96,6 +96,19 @@ if (subcommand === "login") {
         }
         const path = saveConfig({ ...cfg, apiKey, baseURL });
         console.log(`[haven-proxy] Credentials saved to ${path}`);
+        const ocTarget = opencodeConfigPath();
+        console.log(`[haven-proxy] Writing Haven provider to ${ocTarget}…`);
+        try {
+          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(apiKey, baseURL);
+          const preserved = otherProviders.length
+            ? `(preserved: ${otherProviders.join(", ")})`
+            : existed ? "(no other providers)" : "(new file)";
+          console.log(`[haven-proxy] Haven provider written to ${ocPath} ${preserved}`);
+          console.log(`[haven-proxy] Pick "haven/gpt-oss-120b" (or any Haven model) in OpenCode.`);
+        } catch (err) {
+          console.warn(`[haven-proxy] Warning: could not write to ${ocTarget}: ${err.message}`);
+          console.warn(`[haven-proxy] Add the Haven provider to ${ocTarget} manually — see README.`);
+        }
       }
     }
   }
@@ -111,6 +124,8 @@ else if (subcommand === "logout") {
   } else {
     console.log(`[haven-proxy] No credentials to remove (${path} did not exist)`);
   }
+  const { path: ocPath, removed: ocRemoved } = removeOpencodeProvider();
+  if (ocRemoved) console.log(`[haven-proxy] Removed Haven provider from ${ocPath}`);
   process.exitCode = 0;
 }
 
