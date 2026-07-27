@@ -75,6 +75,75 @@ export function redactKey(key) {
   return key.slice(0, 8) + "…" + key.slice(-4);
 }
 
+// Platform-appropriate path for the global OpenCode config.
+// Windows: %APPDATA%\opencode\opencode.json
+// Others:  ~/.config/opencode/opencode.json
+export function opencodeConfigPath() {
+  if (process.platform === "win32") {
+    const appdata = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    return join(appdata, "opencode", "opencode.json");
+  }
+  return join(homedir(), ".config", "opencode", "opencode.json");
+}
+
+// Merge the Haven provider entry into the global OpenCode config.
+// Creates the file if it doesn't exist; preserves all other providers/keys.
+// No API key is written — the provider falls back to ~/.haven-proxy/config.json.
+export function saveOpencodeProvider(apiKey, baseURL) {
+  const path = opencodeConfigPath();
+  let doc = {};
+  let existed = false;
+  try {
+    doc = JSON.parse(readFileSync(path, "utf8"));
+    existed = true;
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  const otherProviders = Object.keys(doc.provider || {}).filter((k) => k !== "haven");
+  if (!doc.provider) doc.provider = {};
+  doc.provider.haven = {
+    npm: "github:jan3dev/haven-proxy",
+    name: "Haven",
+    options: {
+      apiKey,
+      ...(baseURL !== DEFAULT_BASE_URL && { baseURL: `${baseURL}/api/v1/haven` }),
+    },
+    models: {
+      "gpt-oss-120b":  { name: "GPT-OSS 120B (Haven)",  limit: { context: 131072, output: 32768 } },
+      "kimi-k2-6":     { name: "Kimi K2.6 (Haven)",     limit: { context: 200000, output: 65536 } },
+      "glm-5-2":       { name: "GLM-5.2 (Haven)",        limit: { context: 200000, output: 65536 } },
+      "gemma4-31b":    { name: "Gemma 4 31B (Haven)",    limit: { context: 131072, output: 32768 } },
+      "llama3-3-70b":  { name: "Llama 3.3 70B (Haven)",  limit: { context: 131072, output: 32768 } },
+      "qwen3-vl-30b":  { name: "Qwen3-VL 30B (Haven)",   limit: { context: 131072, output: 32768 } },
+    },
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n");
+  renameSync(tmp, path);
+  return { path, existed, otherProviders };
+}
+
+// Remove the Haven provider entry from the global OpenCode config on logout.
+export function removeOpencodeProvider() {
+  const path = opencodeConfigPath();
+  try {
+    const doc = JSON.parse(readFileSync(path, "utf8"));
+    if (doc.provider?.haven) {
+      delete doc.provider.haven;
+      if (Object.keys(doc.provider).length === 0) delete doc.provider;
+      const tmp = path + ".tmp";
+      writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n");
+      renameSync(tmp, path);
+      return { path, removed: true };
+    }
+    return { path, removed: false };
+  } catch (err) {
+    if (err.code === "ENOENT") return { path, removed: false };
+    throw err;
+  }
+}
+
 // Prompt for the API key on stdin, hiding input on a TTY.
 export async function promptApiKey() {
   const { createInterface } = await import("node:readline");

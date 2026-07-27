@@ -85,8 +85,15 @@ proxy process**. This package's default export (`createHaven`) is an `@ai-sdk/op
 provider whose HTTP layer is a custom `fetch` that does the Haven relay (attest + HPKE-encrypt +
 decrypt) locally and injects `X-Api-Key` itself.
 
-Install the package where OpenCode can load it, then point a provider at it in `opencode.json`
-(`~/.config/opencode/opencode.json` or a project file):
+Run `haven-proxy login` once — it writes your key and the Haven provider entry directly into your
+global OpenCode config (`%APPDATA%\opencode\opencode.json` on Windows,
+`~/.config/opencode/opencode.json` elsewhere), the same way every other OpenCode provider works.
+No env var, no manual JSON editing. Then pick any `haven/…` model in OpenCode from any directory.
+
+`haven-proxy logout` reverses both: removes the saved key and removes the provider entry from the
+global OpenCode config.
+
+**Manual setup** (if you prefer to manage `opencode.json` yourself, e.g. in a project file):
 
 ```json
 {
@@ -94,9 +101,6 @@ Install the package where OpenCode can load it, then point a provider at it in `
     "haven": {
       "npm": "github:jan3dev/haven-proxy",
       "name": "Haven",
-      "options": {
-        "apiKey": "{env:HAVEN_API_KEY}"
-      },
       "models": {
         "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 } },
         "kimi-k2-6": { "name": "Kimi K2.6 (Haven)", "limit": { "context": 200000, "output": 65536 } },
@@ -113,15 +117,9 @@ Install the package where OpenCode can load it, then point a provider at it in `
 - `npm` is how OpenCode resolves the package — it uses the same specifiers as `npm install`.
 `"github:jan3dev/haven-proxy"` installs directly from the public GitHub repo (no npm publish needed).
 - `options.baseURL` is optional — defaults to `https://ankara.aquabtc.com/api/v1/haven`. Override
-only for staging or local dev. The client posts to `<baseURL>/chat/completions`; there's no `/v1`
-here and requests go straight to Haven, encrypted.
-- `options.apiKey` is your `hvn1_…` key, sent as `X-Api-Key`. `{env:HAVEN_API_KEY}` keeps the
-secret out of the file. Because we own the `fetch`, the header is added inside it — sidestepping
-OpenCode's habit of dropping custom headers on custom `baseURL`s.
-- Both options are **optional**: when `apiKey` is empty (e.g. `HAVEN_API_KEY` isn't set in the
-environment OpenCode was launched from), the provider falls back to the credentials saved by
-`haven-proxy login` (`~/.haven-proxy/config.json`) — same resolution order as the CLI. So the
-easiest setup is `npx github:jan3dev/haven-proxy login` once, with no env var at all.
+only for staging or local dev.
+- `options.apiKey` is your `hvn1_…` key. `haven-proxy login` writes it here automatically.
+If omitted, the provider falls back to the `HAVEN_API_KEY` env var.
 
 Then pick the `haven/gpt-oss-120b` model in OpenCode.
 
