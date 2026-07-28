@@ -18,6 +18,7 @@ import { parseArgs } from "node:util";
 try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS, validateKey } from "./relay.js";
 import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider } from "./config.js";
+import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
 
 const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
 const DEFAULT_MODELS = "gpt-oss-120b,kimi-k2-6,glm-5-2,gemma4-31b,llama3-3-70b,qwen3-vl-30b";
@@ -33,11 +34,19 @@ Commands:
   login                           Save Haven API key to ~/.haven-proxy/config.json
   logout                          Remove saved credentials
   validate                        Check API key validity and account balance
+  serve                           Start the proxy in the foreground (default)
+  start                           Start the proxy in the background (logs: ~/.haven-proxy/proxy.log)
+  stop                            Stop the background proxy
+  status                          Show background proxy status and account balance
+  startup on|off                  Start the proxy automatically at login (Windows; no arg: show state)
   help                            Show this help
 
-  (no command)                    Start the proxy (default)
+  (no command)                    Start the proxy in the foreground (same as serve)
 
-Options (proxy start):
+  start accepts the same options as serve and passes them through. Prefer
+  \`login\` over --api-key with start — flags are visible in process listings.
+
+Options (serve / start):
   -k, --api-key      <key>        Haven API key (hvn1_…)       [env: HAVEN_API_KEY]
   -u, --base-url     <url>        Ankara backend origin         [env: HAVEN_BASE_URL]   (default: ${DEFAULT_BASE_URL})
   -p, --port         <n>          Port to listen on             [env: PORT]             (default: 3301)
@@ -58,6 +67,11 @@ Credential resolution order: --api-key flag > HAVEN_API_KEY env var > ~/.haven-p
 // Subcommand is the first non-flag argument (if any).
 const subcommand = !process.argv[2] || process.argv[2].startsWith("-") ? null : process.argv[2];
 const subArgs = subcommand ? process.argv.slice(3) : process.argv.slice(2);
+
+// The whole dispatch lives in main() rather than at module top level: the SEA
+// build (scripts/build-sea.mjs) bundles this file to CommonJS, where top-level
+// await is a syntax error. Branch bodies keep their original indentation.
+async function main() {
 
 // --- login ---
 if (subcommand === "login") {
@@ -167,9 +181,56 @@ else if (subcommand === "help" || subcommand === "--help" || subcommand === "-h"
   process.exitCode = 0;
 }
 
+// --- start (background) ---
+else if (subcommand === "start") {
+  // Same options as serve — parsed only to learn where to probe /health;
+  // the flags themselves are forwarded to the child verbatim.
+  const { values } = parseArgs({
+    args: subArgs,
+    options: {
+      "api-key":     { type: "string",  short: "k" },
+      "base-url":    { type: "string",  short: "u" },
+      "port":        { type: "string",  short: "p" },
+      "host":        { type: "string",  short: "H" },
+      "models":      { type: "string",  short: "m" },
+      "timeout":     { type: "string",  short: "t" },
+      "allow-remote":{ type: "boolean" },
+      "help":        { type: "boolean", short: "h" },
+    },
+    strict: true,
+  });
+  if (values.help) {
+    console.log(HELP);
+    process.exitCode = 0;
+  } else {
+    process.exitCode = await startDaemon({
+      port: Number(values.port || process.env.PORT || 3301),
+      host: values.host || process.env.HOST || "127.0.0.1",
+      passthroughArgs: subArgs,
+    });
+  }
+}
+
+// --- stop / status / startup ---
+else if (subcommand === "stop") {
+  process.exitCode = await stopDaemon();
+}
+else if (subcommand === "status") {
+  process.exitCode = await statusDaemon();
+}
+else if (subcommand === "startup") {
+  process.exitCode = await startupCommand(subArgs[0]);
+}
+
+// --- unknown command ---
+else if (subcommand && subcommand !== "serve") {
+  console.error(`[haven-proxy] unknown command "${subcommand}" — run \`haven-proxy help\`.`);
+  process.exitCode = 1;
+}
+
 else {
 
-// --- start proxy (default) ---
+// --- serve: start proxy in the foreground (default) ---
 const { values: flags } = parseArgs({
   args: subArgs,
   options: {
@@ -370,3 +431,10 @@ server.listen(PORT, HOST, async () => {
 });
 
 } // end else (start proxy)
+
+} // end main()
+
+main().catch((err) => {
+  console.error(`[haven-proxy] ${err?.message || err}`);
+  process.exitCode = 1;
+});
