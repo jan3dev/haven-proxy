@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Haven Proxy — API key</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+        color: #222;
+      }
+      h1 { font-size: 15px; margin: 0 0 4px; }
+      p.hint { font-size: 12px; color: #666; margin: 0 0 14px; }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        font-size: 13px;
+        font-family: ui-monospace, monospace;
+        border: 1px solid #bbb;
+        border-radius: 6px;
+      }
+      button {
+        margin-top: 12px;
+        padding: 7px 18px;
+        font-size: 13px;
+        border: none;
+        border-radius: 6px;
+        background: #2e90fa;
+        color: white;
+        cursor: pointer;
+      }
+      button:disabled { background: #9cc7f5; cursor: default; }
+      #status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+      #status.error { color: #c0392b; }
+      #status.ok { color: #1e7d32; }
+    </style>
+  </head>
+  <body>
+    <h1>Enter your Haven API key</h1>
+    <p class="hint">Stored locally in ~/.haven-proxy/config.json — shared with the haven-proxy CLI.</p>
+    <input id="key" type="password" placeholder="hvn1_…" autofocus />
+    <button id="save">Save &amp; verify</button>
+    <p id="status"></p>
+    <script>
+      const input = document.getElementById("key");
+      const button = document.getElementById("save");
+      const status = document.getElementById("status");
+
+      async function save() {
+        button.disabled = true;
+        status.className = "";
+        status.textContent = "Verifying…";
+        const result = await window.haven.saveKey(input.value);
+        if (!result.ok) {
+          status.className = "error";
+          status.textContent = result.error;
+          button.disabled = false;
+          return;
+        }
+        status.className = "ok";
+        status.textContent = result.warning
+          ? result.warning
+          : result.balance !== null
+            ? `Key valid — balance $${result.balance.toFixed(2)}. Proxy is running.`
+            : result.emptyBalance
+              ? "Key valid (balance $0.00 — top up before sending requests)."
+              : "Saved. Proxy is running.";
+        setTimeout(() => window.haven.closeWindow(), 1800);
+      }
+
+      button.addEventListener("click", save);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !button.disabled) save();
+      });
+    </script>
+  </body>
+</html>

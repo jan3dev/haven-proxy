@@ -1,0 +1,20 @@
+{
+  "name": "haven-proxy-app",
+  "productName": "Haven Proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tray app that runs the Haven encrypted-inference proxy in the background",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "haven-proxy": "file:.."
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "electron-builder": "latest"
+  }
+}

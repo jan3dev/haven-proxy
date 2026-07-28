@@ -1,0 +1,37 @@
+appId: com.jan3.haven-proxy
+productName: Haven Proxy
+directories:
+  output: dist
+files:
+  - main.js
+  - tray-icon.js
+  - preload.cjs
+  - key-window.html
+  # The haven-proxy dep is a file:.. symlink to the repo root — without these
+  # excludes the WHOLE repo gets dereferenced into the package, including the
+  # local .env (real API key!), the 96MB SEA exe, and app/dist recursively.
+  # Only src/ and package.json may ship. Verify after any change:
+  #   npx asar list dist/win-unpacked/resources/app.asar | grep haven-proxy
+  - "!node_modules/haven-proxy/{app,dist,scripts,test,node_modules}/**"
+  - "!node_modules/haven-proxy/.*"
+  - "!node_modules/haven-proxy/.*/**"
+  - "!node_modules/haven-proxy/*.md"
+  - "!node_modules/haven-proxy/{opencode.json,package-lock.json,sea-config.json}"
+asar: true
+win:
+  # NSIS, not portable — portable exes extract to %TEMP%, so the launch-at-login
+  # registry entry would point at a temp path.
+  target: nsis
+  artifactName: HavenProxy-Setup-${version}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false # per-user install, no UAC prompt
+mac:
+  target: dmg
+  artifactName: HavenProxy-${version}-${arch}.${ext}
+  extendInfo:
+    LSUIElement: true # menu-bar-only app, no dock icon
+linux:
+  target: AppImage
+  category: Utility
+  artifactName: HavenProxy-${version}.${ext}
