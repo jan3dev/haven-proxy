@@ -239,6 +239,32 @@ All CLI commands work identically to the npm install and share the same
 To build locally instead: `npm ci && npm run build:exe` → `dist/haven-proxy(.exe)` for the
 platform you're on (SEA doesn't cross-compile; CI builds each OS on its own runner).
 
+## Desktop app (prototype)
+
+`app/` contains an Electron tray app for people who don't want a CLI at all: it runs the same
+proxy in-process and puts an icon in the system tray — no terminal, no console window, ever.
+
+- **First run** asks for your `hvn1_…` key, verifies it, and stores it in the same
+  `~/.haven-proxy/config.json` the CLI uses (and registers the OpenCode provider, like
+  `haven-proxy login`).
+- **Tray menu**: status + balance, Start/Stop proxy, **Launch at login** toggle, Open logs, Quit.
+- If a CLI-started proxy already owns port 3301, the app shows "Running — CLI instance" instead
+  of fighting for the port.
+- Installers per OS are built by CI (`HavenProxy-Setup-*.exe`, `HavenProxy-*.dmg`,
+  `HavenProxy-*.AppImage`) — unsigned for now, same SmartScreen/Gatekeeper caveats as above.
+
+Develop/build locally:
+
+```bash
+npm ci                # root deps first (app symlinks this package)
+cd app && npm install
+npm start             # dev run (tray icon, console attached — packaged builds have none)
+npm run dist          # → app/dist/HavenProxy-Setup-<version>.exe (or .dmg / .AppImage)
+```
+
+Don't enable both the app's "Launch at login" and the CLI's `haven-proxy startup on` — they'd
+race for the port at login (the app warns about this).
+
 ## Behaviour & limits
 
 - **Streaming is buffered-then-emitted.** The proxy asks Haven for a non-streamed response (so Haven
