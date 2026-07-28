@@ -202,7 +202,9 @@ function windowsStartupDir() {
   return join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
 }
 
-function windowsLauncherPath() {
+// Exported so the tray app can warn when both it and the CLI launcher would
+// auto-start a proxy at login.
+export function windowsLauncherPath() {
   return join(windowsStartupDir(), "haven-proxy.vbs");
 }
 

@@ -7,7 +7,10 @@
   "exports": {
     ".": "./src/provider.js",
     "./proxy": "./src/index.js",
-    "./relay": "./src/relay.js"
+    "./relay": "./src/relay.js",
+    "./server": "./src/server.js",
+    "./config": "./src/config.js",
+    "./daemon": "./src/daemon.js"
   },
   "bin": {
     "haven-proxy": "src/index.js"
