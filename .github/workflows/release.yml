@@ -1,0 +1,81 @@
+# Builds standalone haven-proxy executables (Node SEA) for Windows, macOS and
+# Linux. SEA cannot cross-compile, so each OS builds natively on its own runner.
+#
+# - push of a v* tag: build, smoke-test, and attach binaries to a GitHub Release
+# - workflow_dispatch: build + smoke-test only (artifacts downloadable from the run)
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release create/upload
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: haven-proxy-win-x64.exe
+            built: dist/haven-proxy.exe
+          - os: macos-latest
+            artifact: haven-proxy-macos-arm64
+            built: dist/haven-proxy
+          - os: ubuntu-latest
+            artifact: haven-proxy-linux-x64
+            built: dist/haven-proxy
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - run: npm run build:exe
+
+      - name: Smoke test (help)
+        shell: bash
+        run: ./${{ matrix.built }} help
+
+      - name: Smoke test (start → health → models → status → stop)
+        shell: bash
+        env:
+          # serve requires a key but listens before validating it, so a dummy
+          # key exercises the full daemon lifecycle; attestation/key warnings
+          # in the log are expected and non-fatal.
+          HAVEN_API_KEY: hvn1_dummy_ci_smoke_test
+        run: |
+          set -x
+          ./${{ matrix.built }} start
+          curl -fsS http://127.0.0.1:3301/health
+          curl -fsS http://127.0.0.1:3301/v1/models | grep -q gpt-oss-120b
+          ./${{ matrix.built }} status || true # balance check fails on the dummy key; must not crash
+          ./${{ matrix.built }} stop
+          cat ~/.haven-proxy/proxy.log
+
+      - name: Rename artifact
+        shell: bash
+        run: cp ${{ matrix.built }} ${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Matrix jobs race to create the release — treat "already exists" as fine.
+          gh release create "${{ github.ref_name }}" --generate-notes || true
+          gh release upload "${{ github.ref_name }}" "${{ matrix.artifact }}" --clobber

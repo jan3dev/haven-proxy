@@ -31,7 +31,8 @@ OpenCode ──plaintext OpenAI──▶  haven-proxy (localhost:3301)  ──EH
 
 ## Requirements
 
-- Node 20.12+ (the SecureClient SDK needs 20; `AbortSignal.any` requires 20.3; `process.loadEnvFile` requires 20.12).
+- Node 20.12+ (the SecureClient SDK needs 20; `AbortSignal.any` requires 20.3; `process.loadEnvFile` requires 20.12) —
+  **or no Node at all** with the [standalone executable](#standalone-executable-no-node-required).
 - A Haven API key (`hvn1_…`) with a positive balance.
 
 
@@ -155,24 +156,19 @@ haven-proxy login --api-key hvn1_…
 haven-proxy
 ```
 
-**Run in the background:**
+**Run in the background** (all platforms — spawns a detached process, logs to `~/.haven-proxy/proxy.log`):
 
 ```bash
-# Unix / macOS
-nohup haven-proxy &> ~/.haven-proxy/proxy.log &
-
-# Windows PowerShell
-Start-Process haven-proxy -WindowStyle Hidden `
-  -RedirectStandardOutput "$HOME\.haven-proxy\proxy.log" `
-  -RedirectStandardError "$HOME\.haven-proxy\proxy.log"
-
-# With PM2 (recommended — auto-restarts on crash, persists across reboots)
-npm install -g pm2
-pm2 start haven-proxy --name haven-proxy
-pm2 save                    # persist across reboots
-pm2 logs haven-proxy        # tail logs
-pm2 stop haven-proxy        # stop
+haven-proxy start             # start in the background (accepts the same flags as serve)
+haven-proxy status            # pid, endpoint, key balance
+haven-proxy stop              # stop the background proxy
+haven-proxy startup on        # also start it automatically at login (Windows; off to undo)
 ```
+
+`start` refuses to double-start (it probes `/health` first) and prints the log path on failure.
+Prefer `login` over passing `--api-key` to `start` — command-line flags are visible in process
+listings. If you'd rather manage the process yourself, PM2 still works
+(`pm2 start haven-proxy -- serve`), as do `nohup` / `Start-Process`.
 
 **Other commands:**
 
@@ -209,6 +205,39 @@ curl -N http://127.0.0.1:3301/v1/chat/completions \
 
 Point any OpenAI-compatible client at `http://127.0.0.1:3301/v1` with any dummy API key (the real
 `hvn1_` secret stays in the proxy's `.env`).
+
+## Standalone executable (no Node required)
+
+Every [GitHub Release](../../releases) ships single-file binaries built with Node's
+[Single Executable Application](https://nodejs.org/api/single-executable-applications.html) support —
+the full proxy CLI with the Node runtime baked in:
+
+| Platform | File |
+| --- | --- |
+| Windows x64 | `haven-proxy-win-x64.exe` |
+| macOS (Apple Silicon) | `haven-proxy-macos-arm64` |
+| Linux x64 | `haven-proxy-linux-x64` |
+
+```bash
+# macOS / Linux: make it executable first
+chmod +x haven-proxy-macos-arm64
+
+./haven-proxy-win-x64.exe login        # paste your hvn1_… key once
+./haven-proxy-win-x64.exe start        # proxy runs in the background
+./haven-proxy-win-x64.exe startup on   # optional: start at login (Windows)
+```
+
+All CLI commands work identically to the npm install and share the same
+`~/.haven-proxy/config.json`, so the binary and a CLI install can coexist.
+
+**Unsigned-binary warnings** (signing is a planned follow-up):
+
+- **Windows SmartScreen** may warn on first run — "More info → Run anyway".
+- **macOS Gatekeeper** quarantines browser downloads: right-click → Open once, or
+  `xattr -d com.apple.quarantine haven-proxy-macos-arm64`.
+
+To build locally instead: `npm ci && npm run build:exe` → `dist/haven-proxy(.exe)` for the
+platform you're on (SEA doesn't cross-compile; CI builds each OS on its own runner).
 
 ## Behaviour & limits
 

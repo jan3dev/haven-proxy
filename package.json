@@ -1,7 +1,7 @@
 {
   "name": "haven-proxy",
-  "version": "0.1.0",
-"type": "module",
+  "version": "0.2.0",
+  "type": "module",
   "description": "Talk to the Haven (EHBP) relay from OpenAI-compatible agents while end-to-end encryption stays on your machine. Ships an in-process AI SDK / OpenCode provider (src/provider.js) and a localhost HTTP proxy (src/index.js) that share one relay core.",
   "main": "src/provider.js",
   "exports": {
@@ -14,7 +14,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "build:exe": "node scripts/build-sea.mjs"
   },
   "engines": {
     "node": ">=20.12"
@@ -22,5 +23,9 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.11",
     "tinfoil": "^1.1.10"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "postject": "^1.0.0-alpha.6"
   }
 }
