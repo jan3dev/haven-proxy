@@ -79,3 +79,65 @@ jobs:
           # Matrix jobs race to create the release — treat "already exists" as fine.
           gh release create "${{ github.ref_name }}" --generate-notes || true
           gh release upload "${{ github.ref_name }}" "${{ matrix.artifact }}" --clobber
+
+  # Electron tray app (app/): unsigned prototype installers per OS.
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build: --win
+            glob: app/dist/HavenProxy-Setup-*.exe
+          - os: macos-latest
+            build: --mac
+            glob: app/dist/HavenProxy-*.dmg
+          - os: ubuntu-latest
+            build: --linux
+            glob: app/dist/HavenProxy-*.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Root deps first: app/node_modules/haven-proxy is a file:.. symlink whose
+      # imports (tinfoil, @ai-sdk/*) resolve through the repo root's node_modules.
+      - run: npm ci
+
+      - run: npm install
+        working-directory: app
+
+      - run: npx electron-builder ${{ matrix.build }}
+        working-directory: app
+        env:
+          # No signing certs in CI — prevent electron-builder from trying.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Check no .env leaked into the package
+        shell: bash
+        run: |
+          if [ -d app/dist/win-unpacked ]; then RES=app/dist/win-unpacked/resources;
+          elif [ -d app/dist/linux-unpacked ]; then RES=app/dist/linux-unpacked/resources;
+          else RES=$(ls -d app/dist/mac*/ 2>/dev/null | head -1)"Haven Proxy.app/Contents/Resources"; fi
+          if npx --prefix app asar list "$RES/app.asar" | grep -i "\.env"; then
+            echo "::error::.env file packaged into the app"; exit 1
+          fi
+          echo "asar clean ✓"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haven-proxy-app-${{ runner.os }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" --generate-notes || true
+          gh release upload "${{ github.ref_name }}" ${{ matrix.glob }} --clobber
