@@ -8,7 +8,15 @@ name: release
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
+
+# A release published via the UI with a new tag fires both the tag push and the
+# release event — keep only one run per ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write # gh release create/upload
@@ -30,9 +38,9 @@ jobs:
             built: dist/haven-proxy
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -64,7 +72,7 @@ jobs:
         shell: bash
         run: cp ${{ matrix.built }} ${{ matrix.artifact }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
@@ -97,9 +105,9 @@ jobs:
             glob: app/dist/HavenProxy-*.AppImage
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -128,7 +136,7 @@ jobs:
           fi
           echo "asar clean ✓"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: haven-proxy-app-${{ runner.os }}
           path: ${{ matrix.glob }}

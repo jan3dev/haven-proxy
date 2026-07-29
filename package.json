@@ -21,11 +21,12 @@
     "build:exe": "node scripts/build-sea.mjs"
   },
   "engines": {
-    "node": ">=20.12"
+    "node": ">=24"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.11",
-    "tinfoil": "^1.1.10"
+    "tinfoil": "^1.1.10",
+    "zod": "^4.1.8"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
