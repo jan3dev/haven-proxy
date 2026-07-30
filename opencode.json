@@ -10,27 +10,33 @@
       "models": {
         "gpt-oss-120b": {
           "name": "GPT-OSS 120B (Haven)",
-          "limit": { "context": 131072, "output": 32768 }
+          "limit": { "context": 131072, "output": 32768 },
+          "cost": { "input": 1.25, "output": 5.25 }
         },
         "kimi-k2-6": {
           "name": "Kimi K2.6 (Haven)",
-          "limit": { "context": 200000, "output": 65536 }
+          "limit": { "context": 200000, "output": 65536 },
+          "cost": { "input": 1.25, "output": 5.25 }
         },
         "glm-5-2": {
           "name": "GLM-5.2 (Haven)",
-          "limit": { "context": 200000, "output": 65536 }
+          "limit": { "context": 200000, "output": 65536 },
+          "cost": { "input": 1.25, "output": 5.25 }
         },
         "gemma4-31b": {
           "name": "Gemma 4 31B (Haven)",
-          "limit": { "context": 131072, "output": 32768 }
+          "limit": { "context": 131072, "output": 32768 },
+          "cost": { "input": 1.25, "output": 5.25 }
         },
         "llama3-3-70b": {
           "name": "Llama 3.3 70B (Haven)",
-          "limit": { "context": 131072, "output": 32768 }
+          "limit": { "context": 131072, "output": 32768 },
+          "cost": { "input": 1.25, "output": 5.25 }
         },
         "qwen3-vl-30b": {
           "name": "Qwen3-VL 30B (Haven)",
-          "limit": { "context": 131072, "output": 32768 }
+          "limit": { "context": 131072, "output": 32768 },
+          "cost": { "input": 1.25, "output": 5.25 }
         }
       }
     }

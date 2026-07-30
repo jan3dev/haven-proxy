@@ -8,11 +8,11 @@
 // routing, relay wiring, and the loopback safety guard.
 import http from "node:http";
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS } from "./relay.js";
-import { DEFAULT_BASE_URL } from "./config.js";
+import { DEFAULT_BASE_URL, DEFAULT_PORT, MODEL_IDS } from "./defaults.js";
 
 export const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
-export const DEFAULT_PORT = 3301;
-export const DEFAULT_MODELS = ["gpt-oss-120b", "kimi-k2-6", "glm-5-2", "gemma4-31b", "llama3-3-70b", "qwen3-vl-30b"];
+export { DEFAULT_PORT };
+export const DEFAULT_MODELS = MODEL_IDS;
 
 export function isLoopbackHost(host) {
   const h = host.toLowerCase();

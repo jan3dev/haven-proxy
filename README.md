@@ -3,7 +3,7 @@
 Lets **OpenCode** (and any OpenAI-compatible client) use the **Haven** API without weakening
 Haven's privacy model. It ships two front-ends over one shared relay core (`src/relay.js`):
 
-- **An in-process provider** (`src/provider.js`, the package's default export) — for OpenCode and
+- **An in-process provider** (`src/provider.js`, the package's main entry point) — for OpenCode and
 anything on the Vercel AI SDK. No daemon, no port; encryption happens inside the agent. **Preferred.**
 - **A localhost HTTP proxy** (`src/index.js`) — an OpenAI-compatible endpoint for tools that only
 take a `baseURL` (Cline, Aider, Continue, Zed, …).
@@ -82,17 +82,29 @@ For local testing, credit `HavenProfile.usd_balance` directly via the Django adm
 ## Use with OpenCode (recommended — no daemon)
 
 OpenCode loads a custom provider package in-process, so it can run the encryption itself with **no
-proxy process**. This package's default export (`createHaven`) is an `@ai-sdk/openai-compatible`
+proxy process**. This package's provider export (`createHaven`) is an `@ai-sdk/openai-compatible`
 provider whose HTTP layer is a custom `fetch` that does the Haven relay (attest + HPKE-encrypt +
 decrypt) locally and injects `X-Api-Key` itself.
 
-Run `haven-proxy login` once — it writes your key and the Haven provider entry directly into your
-global OpenCode config (`%APPDATA%\opencode\opencode.json` on Windows,
-`~/.config/opencode/opencode.json` elsewhere), the same way every other OpenCode provider works.
-No env var, no manual JSON editing. Then pick any `haven/…` model in OpenCode from any directory.
+Run `haven-proxy login` once — it saves your key to `~/.haven-proxy/config.json` (mode 0600) and
+registers the Haven providers in your global OpenCode config, the same way every other OpenCode
+provider works. No env var, no manual JSON editing. Restart OpenCode, then pick any `haven/…` model
+from any directory.
 
-`haven-proxy logout` reverses both: removes the saved key and removes the provider entry from the
-global OpenCode config.
+OpenCode's global config lives at **`~/.config/opencode/opencode.json` on every platform** — on
+Windows that is `C:\Users\<you>\.config\opencode\opencode.json`, *not* `%APPDATA%`. `$OPENCODE_CONFIG`,
+`$OPENCODE_CONFIG_DIR` and `$XDG_CONFIG_HOME` are honored if you've set them.
+
+`haven-proxy logout` reverses both: removes the saved key and removes the provider entries.
+
+Two entries get written, because there are two ways to reach Haven:
+
+| Provider | How it works | Needs a running proxy? |
+| --- | --- | --- |
+| `haven/…` | in-process — OpenCode loads this package and relays itself | no |
+| `haven-local/…` | plain HTTP to the bundled localhost proxy on `127.0.0.1:3301` | yes (`haven-proxy start` or the tray app) |
+
+Prefer `haven/…`. Pass `--port` to `login` if you run the proxy somewhere other than 3301.
 
 **Manual setup** (if you prefer to manage `opencode.json` yourself, e.g. in a project file):
 
@@ -103,12 +115,12 @@ global OpenCode config.
       "npm": "github:jan3dev/haven-proxy",
       "name": "Haven",
       "models": {
-        "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 } },
-        "kimi-k2-6": { "name": "Kimi K2.6 (Haven)", "limit": { "context": 200000, "output": 65536 } },
-        "glm-5-2": { "name": "GLM-5.2 (Haven)", "limit": { "context": 200000, "output": 65536 } },
-        "gemma4-31b": { "name": "Gemma 4 31B (Haven)", "limit": { "context": 131072, "output": 32768 } },
-        "llama3-3-70b": { "name": "Llama 3.3 70B (Haven)", "limit": { "context": 131072, "output": 32768 } },
-        "qwen3-vl-30b": { "name": "Qwen3-VL 30B (Haven)", "limit": { "context": 131072, "output": 32768 } }
+        "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.25, "output": 5.25 } },
+        "kimi-k2-6": { "name": "Kimi K2.6 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.25, "output": 5.25 } },
+        "glm-5-2": { "name": "GLM-5.2 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.25, "output": 5.25 } },
+        "gemma4-31b": { "name": "Gemma 4 31B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.25, "output": 5.25 } },
+        "llama3-3-70b": { "name": "Llama 3.3 70B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.25, "output": 5.25 } },
+        "qwen3-vl-30b": { "name": "Qwen3-VL 30B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.25, "output": 5.25 } }
       }
     }
   }
@@ -119,13 +131,19 @@ global OpenCode config.
 `"github:jan3dev/haven-proxy"` installs directly from the public GitHub repo (no npm publish needed).
 - `options.baseURL` is optional — defaults to `https://ankara.aquabtc.com/api/v1/haven`. Override
 only for staging or local dev.
-- `options.apiKey` is your `hvn1_…` key. `haven-proxy login` writes it here automatically.
-If omitted, the provider falls back to the `HAVEN_API_KEY` env var.
+- `options.apiKey` is deliberately **absent**: the provider resolves your `hvn1_…` key from the
+`HAVEN_API_KEY` env var, then from `~/.haven-proxy/config.json`, so the key never lands in a config
+file you share or commit. Set it explicitly only if you want a different key per project.
 
-Then pick the `haven/gpt-oss-120b` model in OpenCode.
+Restart OpenCode after editing, then pick the `haven/gpt-oss-120b` model.
+
+> If a project-level `opencode.json` (or a global `opencode.jsonc`) also defines a `haven` provider,
+> it overrides the global entry — OpenCode merges `config.json` → `opencode.json` → `opencode.jsonc`,
+> then project configs found walking up from the cwd. `haven-proxy login` warns when it spots one.
 
 > The `limit` values are best-effort defaults — adjust them to each model's real context/output
-> window if you hit truncation.
+> window if you hit truncation. `cost` is USD per 1M tokens and drives OpenCode's session cost
+> display; every Haven model is priced the same.
 
 
 

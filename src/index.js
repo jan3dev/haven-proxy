@@ -16,9 +16,9 @@ import { parseArgs } from "node:util";
 // equivalent, so without this the binary silently starts with no key.
 try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
 import { DEFAULT_TIMEOUT_MS, validateKey } from "./relay.js";
-import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider } from "./config.js";
+import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
 import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
-import { createProxyServer } from "./server.js";
+import { createProxyServer, DEFAULT_PORT } from "./server.js";
 
 const HELP = `
 haven-proxy — OpenAI-compatible localhost proxy for the Haven encrypted inference relay
@@ -28,8 +28,9 @@ Usage:
   npm start                       (loads .env automatically, then starts proxy)
 
 Commands:
-  login                           Save Haven API key to ~/.haven-proxy/config.json
-  logout                          Remove saved credentials
+  login                           Save Haven API key to ~/.haven-proxy/config.json and register
+                                  the Haven providers in your global OpenCode config
+  logout                          Remove saved credentials and the OpenCode providers
   validate                        Check API key validity and account balance
   serve                           Start the proxy in the foreground (default)
   start                           Start the proxy in the background (logs: ~/.haven-proxy/proxy.log)
@@ -46,7 +47,7 @@ Commands:
 Options (serve / start):
   -k, --api-key      <key>        Haven API key (hvn1_…)       [env: HAVEN_API_KEY]
   -u, --base-url     <url>        Ankara backend origin         [env: HAVEN_BASE_URL]   (default: ${DEFAULT_BASE_URL})
-  -p, --port         <n>          Port to listen on             [env: PORT]             (default: 3301)
+  -p, --port         <n>          Port to listen on             [env: PORT]             (default: ${DEFAULT_PORT})
   -H, --host         <host>       Host to bind to               [env: HOST]             (default: 127.0.0.1)
   -m, --models       <list>       Comma-separated model ids     [env: HAVEN_MODELS]
   -t, --timeout      <ms>         Per-request deadline in ms    [env: HAVEN_TIMEOUT_MS] (default: ${DEFAULT_TIMEOUT_MS})
@@ -54,6 +55,8 @@ Options (serve / start):
 
 Options (login):
   -k, --api-key      <key>        API key to save (prompts if omitted)
+  -p, --port         <n>          Port the local proxy will use, for the "haven-local"
+                                  OpenCode provider entry                              (default: ${DEFAULT_PORT})
 
 Global:
   -h, --help                      Show this help and exit
@@ -77,6 +80,7 @@ if (subcommand === "login") {
     options: {
       "api-key":  { type: "string", short: "k" },
       "base-url": { type: "string", short: "u" },
+      "port":     { type: "string", short: "p" },
       "help":     { type: "boolean", short: "h" },
     },
     strict: true,
@@ -107,18 +111,27 @@ if (subcommand === "login") {
         }
         const path = saveConfig({ ...cfg, apiKey, baseURL });
         console.log(`[haven-proxy] Credentials saved to ${path}`);
+        const proxyPort = Number(values.port) || DEFAULT_PORT;
         const ocTarget = opencodeConfigPath();
-        console.log(`[haven-proxy] Writing Haven provider to ${ocTarget}…`);
+        console.log(`[haven-proxy] Writing Haven providers to ${ocTarget}…`);
         try {
-          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(apiKey, baseURL);
+          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(baseURL, { proxyPort });
           const preserved = otherProviders.length
             ? `(preserved: ${otherProviders.join(", ")})`
             : existed ? "(no other providers)" : "(new file)";
-          console.log(`[haven-proxy] Haven provider written to ${ocPath} ${preserved}`);
-          console.log(`[haven-proxy] Pick "haven/gpt-oss-120b" (or any Haven model) in OpenCode.`);
+          console.log(`[haven-proxy] Haven providers written to ${ocPath} ${preserved}`);
+          for (const shadow of opencodeShadowingConfigs(ocPath)) {
+            console.warn(`[haven-proxy] Note: ${shadow} also defines a "haven" provider and takes precedence over the global config.`);
+          }
+          console.log(`[haven-proxy] Restart OpenCode, then pick "haven/gpt-oss-120b" (or any Haven model).`);
+          console.log(`[haven-proxy] "haven/…" needs no proxy; "haven-local/…" relays through haven-proxy start on port ${proxyPort}.`);
         } catch (err) {
           console.warn(`[haven-proxy] Warning: could not write to ${ocTarget}: ${err.message}`);
           console.warn(`[haven-proxy] Add the Haven provider to ${ocTarget} manually — see README.`);
+        }
+        const legacy = pruneLegacyOpencodeConfig();
+        if (legacy.pruned) {
+          console.log(`[haven-proxy] Cleaned up the obsolete ${legacy.path} (OpenCode never read it).`);
         }
       }
     }
@@ -135,8 +148,14 @@ else if (subcommand === "logout") {
   } else {
     console.log(`[haven-proxy] No credentials to remove (${path} did not exist)`);
   }
-  const { path: ocPath, removed: ocRemoved } = removeOpencodeProvider();
-  if (ocRemoved) console.log(`[haven-proxy] Removed Haven provider from ${ocPath}`);
+  try {
+    const { path: ocPath, removed: ocRemoved } = removeOpencodeProvider();
+    if (ocRemoved) console.log(`[haven-proxy] Removed Haven providers from ${ocPath}`);
+  } catch (err) {
+    console.warn(`[haven-proxy] Warning: could not update the OpenCode config: ${err.message}`);
+  }
+  const legacy = pruneLegacyOpencodeConfig();
+  if (legacy.pruned) console.log(`[haven-proxy] Cleaned up the obsolete ${legacy.path}`);
   process.exitCode = 0;
 }
 
