@@ -6,7 +6,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
     />
-    <title>Haven Proxy — API key</title>
+    <title>Haven Proxy — Settings</title>
     <style>
       body {
         font-family: system-ui, sans-serif;
@@ -38,24 +38,79 @@
       #status { font-size: 12px; margin-top: 10px; min-height: 16px; }
       #status.error { color: #c0392b; }
       #status.ok { color: #1e7d32; }
+      details {
+        margin-top: 16px;
+        border-top: 1px solid #eee;
+        padding-top: 10px;
+      }
+      summary { font-size: 12px; color: #666; cursor: pointer; }
+      details .body { margin-top: 10px; }
+      p.warning { font-size: 11px; color: #a15c00; margin: 0 0 8px; }
+      .url-row { display: flex; gap: 6px; }
+      .url-row input { flex: 1; }
+      #reset-url, #save-url {
+        margin-top: 0;
+        padding: 7px 10px;
+        font-size: 12px;
+      }
+      #save-url { margin-top: 10px; }
+      #reset-url { background: #eee; color: #333; }
+      #url-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+      #url-status.error { color: #c0392b; }
+      #url-status.ok { color: #1e7d32; }
     </style>
   </head>
   <body>
-    <h1>Enter your Haven API key</h1>
+    <h1>Haven Proxy settings</h1>
     <p class="hint">Stored locally in ~/.haven-proxy/config.json — shared with the haven-proxy CLI.</p>
     <input id="key" type="password" placeholder="hvn1_…" autofocus />
     <button id="save">Save &amp; verify</button>
     <p id="status"></p>
+    <details id="advanced">
+      <summary>Advanced settings</summary>
+      <div class="body">
+        <p class="warning">Avoid changing this setting — it overrides the Haven backend origin.</p>
+        <div class="url-row">
+          <input id="base-url" type="text" placeholder="https://…" spellcheck="false" />
+          <button id="reset-url" type="button">Reset to default</button>
+        </div>
+        <button id="save-url" type="button">Save</button>
+        <p id="url-status"></p>
+      </div>
+    </details>
     <script>
-      const input = document.getElementById("key");
+      const keyInput = document.getElementById("key");
+      const baseUrlInput = document.getElementById("base-url");
+      const resetUrlButton = document.getElementById("reset-url");
+      const saveUrlButton = document.getElementById("save-url");
       const button = document.getElementById("save");
       const status = document.getElementById("status");
+      const urlStatus = document.getElementById("url-status");
+      let defaultBaseURL = "";
+
+      window.haven.getSettings().then((settings) => {
+        baseUrlInput.value = settings.baseURL;
+        defaultBaseURL = settings.defaultBaseURL;
+      });
+
+      resetUrlButton.addEventListener("click", () => {
+        baseUrlInput.value = defaultBaseURL;
+      });
+
+      // Both save flows return the same { ok, error, warning, balance, emptyBalance }
+      // shape from main — this renders it the same way in either status line.
+      function describeResult(result) {
+        if (result.warning) return result.warning;
+        if (result.balance !== null) return `Balance $${result.balance.toFixed(2)}. Proxy is running.`;
+        if (result.emptyBalance) return "Key valid (balance $0.00 — top up before sending requests).";
+        return "Saved. Proxy is running.";
+      }
 
       async function save() {
         button.disabled = true;
         status.className = "";
         status.textContent = "Verifying…";
-        const result = await window.haven.saveKey(input.value);
+        const result = await window.haven.saveKey({ apiKey: keyInput.value });
         if (!result.ok) {
           status.className = "error";
           status.textContent = result.error;
@@ -63,19 +118,32 @@
           return;
         }
         status.className = "ok";
-        status.textContent = result.warning
-          ? result.warning
-          : result.balance !== null
-            ? `Key valid — balance $${result.balance.toFixed(2)}. Proxy is running.`
-            : result.emptyBalance
-              ? "Key valid (balance $0.00 — top up before sending requests)."
-              : "Saved. Proxy is running.";
+        status.textContent = describeResult(result);
         setTimeout(() => window.haven.closeWindow(), 1800);
       }
 
+      async function saveBaseUrl() {
+        saveUrlButton.disabled = true;
+        urlStatus.className = "";
+        urlStatus.textContent = "Saving…";
+        const result = await window.haven.saveBaseURL({ baseURL: baseUrlInput.value });
+        saveUrlButton.disabled = false;
+        if (!result.ok) {
+          urlStatus.className = "error";
+          urlStatus.textContent = result.error;
+          return;
+        }
+        urlStatus.className = "ok";
+        urlStatus.textContent = describeResult(result);
+      }
+
       button.addEventListener("click", save);
-      input.addEventListener("keydown", (e) => {
+      keyInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !button.disabled) save();
+      });
+      saveUrlButton.addEventListener("click", saveBaseUrl);
+      baseUrlInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !saveUrlButton.disabled) saveBaseUrl();
       });
     </script>
   </body>
