@@ -8,11 +8,12 @@
 // OpenCode's habit of dropping custom headers on custom baseURLs, which is the
 // whole reason the standalone proxy existed.
 //
-// opencode.json:
+// opencode.json (`haven-proxy login` writes this for you; options are optional —
+// without them the key comes from HAVEN_API_KEY or ~/.haven-proxy/config.json):
 //   {
 //     "provider": {
 //       "haven": {
-//         "npm": "haven-proxy",
+//         "npm": "github:jan3dev/haven-proxy",
 //         "options": {
 //           "baseURL": "https://your-ankara-host/api/v1/haven",
 //           "apiKey": "{env:HAVEN_API_KEY}"

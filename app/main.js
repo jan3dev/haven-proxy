@@ -13,7 +13,17 @@ import { app, Tray, Menu, BrowserWindow, ipcMain, shell, dialog, Notification } 
 import { createWriteStream, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createProxyServer, DEFAULT_PORT } from "haven-proxy/server";
-import { loadConfig, saveConfig, saveOpencodeProvider, DEFAULT_BASE_URL } from "haven-proxy/config";
+import {
+  loadConfig,
+  saveConfig,
+  saveOpencodeProvider,
+  removeOpencodeProvider,
+  ensureOpencodeProvider,
+  opencodeProviderStatus,
+  opencodeShadowingConfigs,
+  pruneLegacyOpencodeConfig,
+  DEFAULT_BASE_URL,
+} from "haven-proxy/config";
 import { validateKey } from "haven-proxy/relay";
 import { logPath, windowsLauncherPath } from "haven-proxy/daemon";
 import { trayIcon } from "./tray-icon.js";
@@ -28,6 +38,7 @@ let keyWindow = null;
 let logStream = null;
 let logSink = null; // { info, warn, error } writers over logStream
 let balance = { text: "Balance: …", at: 0, pending: false };
+let opencodeWarning = ""; // shown in the tray menu when registration didn't take
 // Strong refs until close/failed — a GC'd Notification closes its Windows toast.
 const liveNotifications = new Set();
 
@@ -93,12 +104,54 @@ app.whenReady().then(async () => {
 
   const { cfg } = loadConfig();
   if (cfg.apiKey) {
+    syncOpencode();
     await startProxy();
     if (state === "running" || state === "external") notifyRunning();
   } else {
     openKeyWindow();
   }
 });
+
+// --- OpenCode registration --------------------------------------------------
+
+// Re-assert the provider entries on every start: an install from before the
+// config-path fix, or an OpenCode config the user wiped, would otherwise stay
+// broken forever with nothing to hint at why Haven models never show up.
+function syncOpencode() {
+  opencodeWarning = "";
+  const { cfg } = loadConfig();
+  if (!cfg.apiKey) return; // keyless entries would list models that fail on first use
+  const log = ensureLog();
+  try {
+    const { path, changed } = ensureOpencodeProvider(cfg.baseURL);
+    if (changed) log.info(`registered Haven providers in ${path}`);
+    // cwd is wherever Electron was launched, so only check the global-dir override.
+    const [shadow] = opencodeShadowingConfigs(path, { cwd: null });
+    if (shadow) opencodeWarning = `OpenCode config overridden by ${shadow}`;
+    const legacy = pruneLegacyOpencodeConfig();
+    if (legacy.pruned) log.info(`cleaned up obsolete ${legacy.path}`);
+  } catch (err) {
+    opencodeWarning = `OpenCode config: ${err.message}`;
+    log.warn(`could not update the OpenCode config: ${err.message}`);
+  }
+}
+
+function toggleOpencode(enabled) {
+  const { cfg } = loadConfig();
+  try {
+    if (enabled) saveOpencodeProvider(cfg.baseURL);
+    else removeOpencodeProvider();
+    opencodeWarning = "";
+  } catch (err) {
+    dialog.showMessageBox({
+      type: "error",
+      message: enabled
+        ? "Could not register the Haven providers with OpenCode."
+        : "Could not remove the Haven providers from the OpenCode config.",
+      detail: err.message,
+    });
+  }
+}
 
 function showMenu() {
   refreshBalance();
@@ -144,6 +197,14 @@ function buildMenu() {
       checked: cfg.notifyOnStart !== false,
       click: (item) => saveConfig({ ...loadConfig().cfg, notifyOnStart: item.checked }),
     },
+    {
+      label: "Register with OpenCode",
+      type: "checkbox",
+      checked: opencodeProviderStatus(cfg.baseURL).registered,
+      enabled: Boolean(cfg.apiKey),
+      click: (item) => toggleOpencode(item.checked),
+    },
+    ...(opencodeWarning ? [{ label: opencodeWarning, enabled: false }] : []),
     { type: "separator" },
     { label: "Open logs", click: () => shell.openPath(logPath()) },
     { label: "Settings…", click: openKeyWindow },
@@ -305,6 +366,32 @@ ipcMain.handle("haven:get-settings", () => {
   return { baseURL: cfg.baseURL || DEFAULT_BASE_URL, defaultBaseURL: DEFAULT_BASE_URL };
 });
 
+// Both settings flows do the same thing once the new values validate: persist them
+// (even when Haven was unreachable, like the CLI's login), re-register with
+// OpenCode best-effort, and restart the relay so it picks the change up.
+async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted = false } = {}) {
+  saveConfig({ ...cfg, apiKey, baseURL });
+  let warning =
+    result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
+  try {
+    ensureOpencodeProvider(baseURL);
+  } catch (err) {
+    warning = `Saved, but could not update the OpenCode config: ${err.message}`;
+  }
+  if (state !== "external") {
+    await stopProxy(); // key or backend changed: restart the relay with the new values
+    await startProxy();
+  }
+  if (notifyIfStarted && (state === "running" || state === "external")) notifyRunning();
+  refreshBalance(true);
+  return {
+    ok: true,
+    warning,
+    balance: result.ok ? result.balance : null,
+    emptyBalance: result.reason === "empty_balance",
+  };
+}
+
 ipcMain.handle("haven:save-key", async (_event, { apiKey: rawKey } = {}) => {
   const apiKey = String(rawKey || "").trim();
   if (!apiKey) return { ok: false, error: "API key is required." };
@@ -315,28 +402,7 @@ ipcMain.handle("haven:save-key", async (_event, { apiKey: rawKey } = {}) => {
   if (result.reason === "invalid_key") {
     return { ok: false, error: "Key is invalid — check it and try again." };
   }
-  // Mirror the CLI login side effects: save even when Haven is unreachable,
-  // and register the OpenCode provider best-effort.
-  saveConfig({ ...cfg, apiKey, baseURL });
-  let warning =
-    result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
-  try {
-    saveOpencodeProvider(apiKey, baseURL);
-  } catch (err) {
-    warning = `Saved, but could not update the OpenCode config: ${err.message}`;
-  }
-  if (state !== "external") {
-    await stopProxy(); // key changed: restart the relay with the new key
-    await startProxy();
-  }
-  if (isFirstSetup && (state === "running" || state === "external")) notifyRunning();
-  refreshBalance(true);
-  return {
-    ok: true,
-    warning,
-    balance: result.ok ? result.balance : null,
-    emptyBalance: result.reason === "empty_balance",
-  };
+  return applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted: isFirstSetup });
 });
 
 ipcMain.handle("haven:save-base-url", async (_event, { baseURL: rawBaseURL } = {}) => {
@@ -344,6 +410,7 @@ ipcMain.handle("haven:save-base-url", async (_event, { baseURL: rawBaseURL } = {
   const { cfg } = loadConfig();
   if (!cfg.apiKey) {
     // Nothing to validate against yet — just persist it for when a key is entered.
+    // Deliberately no OpenCode entry either: without a key its models would fail.
     saveConfig({ ...cfg, baseURL });
     return {
       ok: true,
@@ -356,25 +423,7 @@ ipcMain.handle("haven:save-base-url", async (_event, { baseURL: rawBaseURL } = {
   if (result.reason === "invalid_key") {
     return { ok: false, error: "The saved API key is invalid against this backend." };
   }
-  saveConfig({ ...cfg, baseURL });
-  let warning =
-    result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
-  try {
-    saveOpencodeProvider(cfg.apiKey, baseURL);
-  } catch (err) {
-    warning = `Saved, but could not update the OpenCode config: ${err.message}`;
-  }
-  if (state !== "external") {
-    await stopProxy(); // backend changed: restart the relay against the new origin
-    await startProxy();
-  }
-  refreshBalance(true);
-  return {
-    ok: true,
-    warning,
-    balance: result.ok ? result.balance : null,
-    emptyBalance: result.reason === "empty_balance",
-  };
+  return applySettings(cfg, { apiKey: cfg.apiKey, baseURL }, result);
 });
 
 ipcMain.handle("haven:close-key-window", () => {
