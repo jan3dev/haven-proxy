@@ -10,12 +10,13 @@
 //     running" while this app serves the port; the app detects the reverse
 //     case (CLI daemon already on the port) and shows "running (external)".
 import { app, Tray, Menu, BrowserWindow, ipcMain, shell, dialog, Notification } from "electron";
-import { createWriteStream, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createProxyServer, DEFAULT_PORT } from "haven-proxy/server";
 import {
   loadConfig,
   saveConfig,
+  configPath,
   saveOpencodeProvider,
   removeOpencodeProvider,
   ensureOpencodeProvider,
@@ -65,13 +66,11 @@ app.on("window-all-closed", () => {});
 
 // --- notifications -----------------------------------------------------------
 
-// All toasts go through here: honors the user's "Notify at startup" setting and
-// logs the lifecycle (show/close/failed) so a toast Windows dismisses early
-// leaves a trace in the log file instead of just flashing by.
+// All toasts go through here: logs the lifecycle (show/close/failed) so a toast
+// Windows dismisses early leaves a trace in the log file instead of just
+// flashing by. Only meaningful events toast (first-run, double-launch, errors).
 function notify(title, body) {
   if (!Notification.isSupported()) return;
-  const { cfg } = loadConfig();
-  if (cfg.notifyOnStart === false) return;
   const log = ensureLog();
   const n = new Notification({ title, body });
   liveNotifications.add(n);
@@ -102,15 +101,36 @@ app.whenReady().then(async () => {
   tray.on("click", showMenu);
   tray.on("right-click", showMenu);
 
+  consumeInstallOptions();
   const { cfg } = loadConfig();
   if (cfg.apiKey) {
     syncOpencode();
     await startProxy();
-    if (state === "running" || state === "external") notifyRunning();
   } else {
     openKeyWindow();
   }
 });
+
+// The Windows installer writes an option seed on fresh installs (see
+// build/installer.nsh). Honor it once — only for keys the config doesn't
+// already have — then delete it. Never present on macOS/Linux.
+function consumeInstallOptions() {
+  const seedPath = join(dirname(configPath()), "install-options.json");
+  let seed;
+  try {
+    seed = JSON.parse(readFileSync(seedPath, "utf8"));
+  } catch {
+    return; // missing or malformed — nothing to consume
+  }
+  try {
+    const { cfg } = loadConfig();
+    if (typeof seed.registerOpencode === "boolean" && !("registerOpencode" in cfg)) {
+      saveConfig({ ...cfg, registerOpencode: seed.registerOpencode });
+    }
+  } finally {
+    rmSync(seedPath, { force: true });
+  }
+}
 
 // --- OpenCode registration --------------------------------------------------
 
@@ -121,6 +141,7 @@ function syncOpencode() {
   opencodeWarning = "";
   const { cfg } = loadConfig();
   if (!cfg.apiKey) return; // keyless entries would list models that fail on first use
+  if (cfg.registerOpencode === false) return; // user opted out — the toggle already removed the entries
   const log = ensureLog();
   try {
     const { path, changed } = ensureOpencodeProvider(cfg.baseURL);
@@ -141,6 +162,8 @@ function toggleOpencode(enabled) {
   try {
     if (enabled) saveOpencodeProvider(cfg.baseURL);
     else removeOpencodeProvider();
+    // Persist only after the write succeeded, so flag and on-disk state converge.
+    saveConfig({ ...cfg, registerOpencode: enabled });
     opencodeWarning = "";
   } catch (err) {
     dialog.showMessageBox({
@@ -192,18 +215,13 @@ function buildMenu() {
       click: (item) => setLaunchAtLogin(item.checked),
     },
     {
-      label: "Notify at startup",
-      type: "checkbox",
-      checked: cfg.notifyOnStart !== false,
-      click: (item) => saveConfig({ ...loadConfig().cfg, notifyOnStart: item.checked }),
-    },
-    {
       label: "Register with OpenCode",
       type: "checkbox",
       checked: opencodeProviderStatus(cfg.baseURL).registered,
       enabled: Boolean(cfg.apiKey),
       click: (item) => toggleOpencode(item.checked),
     },
+    { label: "OpenCode works without the proxy running", enabled: false },
     ...(opencodeWarning ? [{ label: opencodeWarning, enabled: false }] : []),
     { type: "separator" },
     { label: "Open logs", click: () => shell.openPath(logPath()) },
@@ -374,7 +392,7 @@ async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted
   let warning =
     result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
   try {
-    ensureOpencodeProvider(baseURL);
+    if (cfg.registerOpencode !== false) ensureOpencodeProvider(baseURL);
   } catch (err) {
     warning = `Saved, but could not update the OpenCode config: ${err.message}`;
   }

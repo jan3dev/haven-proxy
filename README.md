@@ -104,7 +104,9 @@ Two entries get written, because there are two ways to reach Haven:
 | `haven/…` | in-process — OpenCode loads this package and relays itself | no |
 | `haven-local/…` | plain HTTP to the bundled localhost proxy on `127.0.0.1:3301` | yes (`haven-proxy start` or the tray app) |
 
-Prefer `haven/…`. Pass `--port` to `login` if you run the proxy somewhere other than 3301.
+Prefer `haven/…` — the relay runs inside OpenCode, so neither the CLI daemon nor the tray app
+needs to be running for those models. Pass `--port` to `login` if you run the proxy somewhere
+other than 3301.
 
 **Manual setup** (if you prefer to manage `opencode.json` yourself, e.g. in a project file):
 
@@ -265,7 +267,14 @@ proxy in-process and puts an icon in the system tray — no terminal, no console
 - **First run** asks for your `hvn1_…` key, verifies it, and stores it in the same
   `~/.haven-proxy/config.json` the CLI uses (and registers the OpenCode provider, like
   `haven-proxy login`).
-- **Tray menu**: status + balance, Start/Stop proxy, **Launch at login** toggle, Open logs, Quit.
+- **Tray menu**: status + balance, Start/Stop proxy, **Launch at login** toggle, **Register with
+  OpenCode** toggle (persisted — unchecking keeps the Haven entries out across restarts), Open
+  logs, Settings, Quit.
+- **OpenCode doesn't need the proxy running**: `haven/…` models relay in-process, so they work
+  with the app closed. The tray proxy exists for baseURL-only tools (`haven-local/…`, Cline,
+  Aider, Continue, …).
+- The Windows installer asks whether to register Haven with OpenCode; on macOS/Linux it defaults
+  to yes and can be toggled in the tray menu.
 - If a CLI-started proxy already owns port 3301, the app shows "Running — CLI instance" instead
   of fighting for the port.
 - Installers per OS are built by CI (`HavenProxy-Setup-*.exe`, `HavenProxy-*.dmg`,
