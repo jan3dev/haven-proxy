@@ -24,8 +24,11 @@ win:
   target: nsis
   artifactName: HavenProxy-Setup-${version}.${ext}
 nsis:
-  oneClick: true
+  # Assisted (multi-page) installer: custom pages like the OpenCode checkbox in
+  # build/installer.nsh only exist in electron-builder's assistedInstaller.nsh.
+  oneClick: false
   perMachine: false # per-user install, no UAC prompt
+  include: build/installer.nsh
 mac:
   target: dmg
   artifactName: HavenProxy-${version}-${arch}.${ext}
