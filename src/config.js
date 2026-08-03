@@ -81,6 +81,9 @@ export function redactKey(key) {
 const OPENCODE_SCHEMA = "https://opencode.ai/config.json";
 // The two provider ids we own; everything else in the file is the user's.
 const MANAGED_IDS = ["haven", "haven-local"];
+// #semver: resolves against release tags, so users always install the latest
+// 0.x release instead of whatever is on main. Bump the range at 1.0.
+export const HAVEN_NPM_SPEC = "github:jan3dev/haven-proxy#semver:0.x";
 
 // OpenCode resolves its global config through XDG paths rooted at $HOME on EVERY
 // platform — there is no %APPDATA% branch, which is why the Windows path this used
@@ -146,7 +149,7 @@ function havenProviders(baseURL, proxyPort) {
   const origin = (baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "");
   return {
     haven: {
-      npm: "github:jan3dev/haven-proxy",
+      npm: HAVEN_NPM_SPEC,
       name: "Haven",
       // Only pin baseURL when it isn't the default; the provider resolves it otherwise.
       ...(origin !== DEFAULT_BASE_URL && { options: { baseURL: `${origin}/api/v1/haven` } }),

@@ -13,7 +13,7 @@
 //   {
 //     "provider": {
 //       "haven": {
-//         "npm": "github:jan3dev/haven-proxy",
+//         "npm": "github:jan3dev/haven-proxy#semver:0.x",
 //         "options": {
 //           "baseURL": "https://your-ankara-host/api/v1/haven",
 //           "apiKey": "{env:HAVEN_API_KEY}"

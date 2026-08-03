@@ -114,7 +114,7 @@ other than 3301.
 {
   "provider": {
     "haven": {
-      "npm": "github:jan3dev/haven-proxy",
+      "npm": "github:jan3dev/haven-proxy#semver:0.x",
       "name": "Haven",
       "models": {
         "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.25, "output": 5.25 } },
@@ -130,7 +130,8 @@ other than 3301.
 ```
 
 - `npm` is how OpenCode resolves the package — it uses the same specifiers as `npm install`.
-`"github:jan3dev/haven-proxy"` installs directly from the public GitHub repo (no npm publish needed).
+`"github:jan3dev/haven-proxy#semver:0.x"` installs the latest 0.x release tag directly from the
+public GitHub repo (no npm publish needed).
 - `options.baseURL` is optional — defaults to `https://ankara.aquabtc.com/api/v1/haven`. Override
 only for staging or local dev.
 - `options.apiKey` is deliberately **absent**: the provider resolves your `hvn1_…` key from the
@@ -158,7 +159,7 @@ OpenAI-compatible endpoint.
 **Install globally** (once):
 
 ```bash
-npm install -g github:jan3dev/haven-proxy
+npm install -g github:jan3dev/haven-proxy#semver:0.x
 ```
 
 **Save your API key** (once — stored at `~/.haven-proxy/config.json`, mode 0600):
