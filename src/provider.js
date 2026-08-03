@@ -124,5 +124,8 @@ export function createHaven(options = {}) {
 
   // No apiKey/headers passed here — auth is handled inside havenFetch (X-Api-Key),
   // so the AI SDK never adds an Authorization: Bearer header Haven would reject.
-  return createOpenAICompatible({ name, baseURL: havenApiRoot, fetch: havenFetch });
+  // includeUsage makes the SDK send stream_options.include_usage, which is what
+  // gates the usage chunk in the re-synthesized stream (see prepareUpstream) —
+  // without it OpenCode gets no token counts and can't price requests.
+  return createOpenAICompatible({ name, baseURL: havenApiRoot, fetch: havenFetch, includeUsage: true });
 }
