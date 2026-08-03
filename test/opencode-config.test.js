@@ -10,6 +10,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { MODEL_IDS, DEFAULT_BASE_URL, DEFAULT_PORT, DEFAULT_COST } from "../src/defaults.js";
 import {
+  HAVEN_NPM_SPEC,
   opencodeConfigDir,
   opencodeConfigPath,
   opencodeProviderStatus,
@@ -95,7 +96,9 @@ describe("saveOpencodeProvider", () => {
 
     const doc = read();
     assert.equal(doc.$schema, "https://opencode.ai/config.json");
-    assert.equal(doc.provider.haven.npm, "github:jan3dev/haven-proxy");
+    assert.equal(doc.provider.haven.npm, HAVEN_NPM_SPEC);
+    // Literal check too, so a typo in the shared constant can't self-validate.
+    assert.match(doc.provider.haven.npm, /^github:jan3dev\/haven-proxy#semver:0\.x$/);
     assert.equal(doc.provider.haven.name, "Haven");
     assert.equal(doc.provider["haven-local"].npm, "@ai-sdk/openai-compatible");
     assert.equal(
@@ -206,7 +209,7 @@ describe("ensureOpencodeProvider", () => {
     write({
       provider: {
         haven: {
-          npm: "github:jan3dev/haven-proxy",
+          npm: HAVEN_NPM_SPEC,
           options: { apiKey: "hvn1_leftover_key" },
           models: Object.fromEntries(MODEL_IDS.map((id) => [id, {}])),
         },
