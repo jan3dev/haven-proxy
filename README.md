@@ -297,9 +297,9 @@ platform you're on (SEA doesn't cross-compile; CI builds each OS on its own runn
 
 Haven's `chat/completions` endpoint is deliberately an **opaque EHBP relay**: the client
 HPKE-encrypts the request body end-to-end to the inference enclave, and Haven only injects the real
-upstream API key and meters tokens from a cleartext usage header — it never sees your prompt or the
-completion. OpenCode, on the other hand, speaks plaintext OpenAI: it POSTs JSON and expects JSON/SSE
-back. It cannot encrypt a body to an enclave.
+upstream API key and meters tokens from usage the enclave reports out of band — it never sees your
+prompt or the completion. OpenCode, on the other hand, speaks plaintext OpenAI: it POSTs JSON and
+expects JSON/SSE back. It cannot encrypt a body to an enclave.
 
 Rather than make Haven decrypt server-side (which would mean Haven reads every prompt — a trust
 change), this proxy runs the `SecureClient` SDK **on your machine**. OpenCode talks plaintext to

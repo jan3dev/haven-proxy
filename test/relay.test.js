@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
   classifyHavenError,
-  prepareUpstream,
   sseLinesFor,
   createSecureRelay,
   fetchPricing,
@@ -91,26 +90,6 @@ describe("classifyHavenError", () => {
     assert.equal(err.type, "invalid_request_error");
     assert.equal(err.code, "VALIDATION_ERROR");
     assert.equal(err.message, "Payload exceeds 262144 bytes.");
-  });
-});
-
-describe("prepareUpstream", () => {
-  test("always buffers upstream; preserves the caller's stream intent", () => {
-    const { wantStream, includeUsage, upstreamBody } = prepareUpstream({
-      model: "m",
-      stream: true,
-      stream_options: { include_usage: true },
-    });
-    assert.equal(wantStream, true);
-    assert.equal(includeUsage, true);
-    assert.equal(upstreamBody.stream, false);
-    assert.equal("stream_options" in upstreamBody, false);
-  });
-
-  test("non-streaming request passes through unstreamed", () => {
-    const { wantStream, includeUsage } = prepareUpstream({ model: "m" });
-    assert.equal(wantStream, false);
-    assert.equal(includeUsage, false);
   });
 });
 
@@ -225,16 +204,47 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
     choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
   };
 
+  const SSE_FIRST = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n';
+  const SSE_REST = 'data: {"choices":[],"usage":{"total_tokens":2}}\n\ndata: [DONE]\n\n';
+
   let server;
   let relayObj;
+  let makeRelay; // build another stubbed relay (e.g. with a short deadline)
   let mode; // per-test server behaviour
   let hits;
   let resets;
+  let gate; // resolved to release the tail of an "sse" response
+  let openGate;
+
+  // Turn a hang into a readable failure instead of stalling the whole run.
+  const withTimeout = (promise, what, ms = 5000) =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms).unref(),
+      ),
+    ]);
 
   before(async () => {
     server = createServer((req, res) => {
       hits++;
       switch (mode === "recover" && hits > 1 ? "ok" : mode) {
+        case "sse": {
+          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+          res.write(SSE_FIRST);
+          // The tail is withheld until the test has read the first frame: a
+          // buffering relay would never hand that frame over, so this deadlocks
+          // (and trips withTimeout) if the passthrough regresses.
+          gate.then(() => {
+            res.write(SSE_REST);
+            res.end();
+          });
+          break;
+        }
+        case "ssehang": // headers + one frame, then never finishes
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.write(SSE_FIRST);
+          break;
         case "recover": // first hit: pre-passthrough Haven wrapping the EHBP 422
           res.writeHead(502, { "Content-Type": "application/json" });
           res.end(JSON.stringify(envelope(422)));
@@ -271,19 +281,23 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
     // root and have the stub POST to the plain-http server on the same port.
     const root = `https://127.0.0.1:${port}/api/v1/haven`;
     const httpRoot = `http://127.0.0.1:${port}/api/v1/haven`;
-    relayObj = createSecureRelay({ havenApiRoot: root, apiKey: "hvn1_test" });
-    Object.defineProperty(relayObj.client, "fetch", {
-      value: async (path, init) => {
-        const res = await globalThis.fetch(`${httpRoot}/${path}`, init);
-        if (!res.ok) throw new Error("Missing Ehbp-Response-Nonce header");
-        return res;
-      },
-    });
-    Object.defineProperty(relayObj.client, "reset", {
-      value: () => {
-        resets++;
-      },
-    });
+    makeRelay = (opts = {}) => {
+      const obj = createSecureRelay({ havenApiRoot: root, apiKey: "hvn1_test", ...opts });
+      Object.defineProperty(obj.client, "fetch", {
+        value: async (path, init) => {
+          const res = await globalThis.fetch(`${httpRoot}/${path}`, init);
+          if (!res.ok) throw new Error("Missing Ehbp-Response-Nonce header");
+          return res;
+        },
+      });
+      Object.defineProperty(obj.client, "reset", {
+        value: () => {
+          resets++;
+        },
+      });
+      return obj;
+    };
+    relayObj = makeRelay();
   });
 
   after(() => server.close());
@@ -291,6 +305,9 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
   beforeEach(() => {
     hits = 0;
     resets = 0;
+    gate = new Promise((resolve) => {
+      openGate = resolve;
+    });
   });
 
   test("wrapped stale-key 422 → reset, retry once, succeed", async () => {
@@ -339,12 +356,93 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
     assert.equal(out.error.code, "insufficient_balance");
   });
 
-  test("success → completion and usage header round-trip", async () => {
+  test("non-streamed success → completion and usage header round-trip", async () => {
     mode = "ok";
-    const out = await relayObj.relay({ model: "gpt-oss-120b", messages: [], stream: true });
+    const out = await relayObj.relay({ model: "gpt-oss-120b", messages: [] });
     assert.equal(out.ok, true);
     assert.equal(out.completion.choices[0].message.content, "hi");
     assert.equal(out.usage, "prompt=1,completion=1,total=2");
+    assert.equal(out.wantStream, false);
+  });
+
+  test("streamed request relays stream:true upstream untouched", async () => {
+    mode = "sse";
+    let seen;
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      seen = JSON.parse(init.body);
+      return original(input, init);
+    };
+    try {
+      const out = await relayObj.relay({
+        model: "gpt-oss-120b",
+        messages: [],
+        stream: true,
+        stream_options: { include_usage: true },
+      });
+      openGate();
+      await out.stream?.cancel();
+    } finally {
+      globalThis.fetch = original;
+    }
+    assert.equal(seen.stream, true, "stream:true must reach the enclave");
+    assert.deepEqual(seen.stream_options, { include_usage: true });
+  });
+
+  test("SSE reply is handed back as a live stream, not buffered", async () => {
+    mode = "sse";
+    const out = await relayObj.relay({ model: "gpt-oss-120b", messages: [], stream: true });
+    assert.equal(out.ok, true);
     assert.equal(out.wantStream, true);
+    assert.ok(out.stream, "expected a passthrough stream");
+    assert.equal(out.completion, undefined, "streamed replies must not be buffered");
+
+    const reader = out.stream.getReader();
+    const decode = (v) => new TextDecoder().decode(v);
+
+    // Arrives while the server is still holding the rest of the response.
+    const first = await withTimeout(reader.read(), "first SSE frame");
+    assert.equal(decode(first.value), SSE_FIRST);
+
+    openGate();
+    let rest = "";
+    for (;;) {
+      const { done, value } = await withTimeout(reader.read(), "remaining SSE frames");
+      if (done) break;
+      rest += decode(value);
+    }
+    assert.equal(rest, SSE_REST);
+  });
+
+  test("non-SSE answer to a streamed request falls back to the buffered path", async () => {
+    // A Haven deployment that ignores stream:true replies with plain JSON; the
+    // caller still asked for a stream, so callers re-synthesize one downstream.
+    mode = "ok";
+    const out = await relayObj.relay({
+      model: "gpt-oss-120b",
+      messages: [],
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.stream, undefined);
+    assert.equal(out.wantStream, true);
+    assert.equal(out.includeUsage, true);
+    assert.equal(out.completion.choices[0].message.content, "hi");
+  });
+
+  test("deadline stays armed across the stream, not just its headers", async () => {
+    mode = "ssehang";
+    const short = makeRelay({ timeoutMs: 300 });
+    const out = await short.relay({ model: "gpt-oss-120b", messages: [], stream: true });
+    assert.equal(out.ok, true, "headers arrive fine; the hang is mid-stream");
+
+    const reader = out.stream.getReader();
+    assert.equal(new TextDecoder().decode((await reader.read()).value), SSE_FIRST);
+    // The upstream never finishes — the request deadline must tear it down.
+    await assert.rejects(withTimeout(reader.read(), "stream deadline"), (err) => {
+      assert.doesNotMatch(err.message, /timed out waiting for/, "deadline never fired");
+      return true;
+    });
   });
 });

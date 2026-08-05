@@ -104,10 +104,15 @@ export function createHaven(options = {}) {
     if (result.aborted) throw new DOMException("The request was aborted.", "AbortError");
     if (!result.ok) return errorResponse(result.error);
 
-    const headers = new Headers({ "Content-Type": "application/json" });
+    const sseHeaders = { "Content-Type": "text/event-stream" };
 
+    // The enclave's own SSE, decrypted chunk by chunk — forwarded verbatim so
+    // the AI SDK renders tokens as they arrive.
+    if (result.stream) return new Response(result.stream, { status: 200, headers: sseHeaders });
+
+    // Buffered completion. `wantStream` here means the deployment ignored
+    // `stream:true`, so synthesize the SSE the caller is waiting on.
     if (result.wantStream) {
-      headers.set("Content-Type", "text/event-stream");
       const encoder = new TextEncoder();
       const lines = sseLinesFor(result.completion, result.includeUsage);
       const stream = new ReadableStream({
@@ -116,16 +121,19 @@ export function createHaven(options = {}) {
           controller.close();
         },
       });
-      return new Response(stream, { status: 200, headers });
+      return new Response(stream, { status: 200, headers: sseHeaders });
     }
 
-    return new Response(JSON.stringify(result.completion), { status: 200, headers });
+    return new Response(JSON.stringify(result.completion), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   };
 
   // No apiKey/headers passed here — auth is handled inside havenFetch (X-Api-Key),
   // so the AI SDK never adds an Authorization: Bearer header Haven would reject.
-  // includeUsage makes the SDK send stream_options.include_usage, which is what
-  // gates the usage chunk in the re-synthesized stream (see prepareUpstream) —
-  // without it OpenCode gets no token counts and can't price requests.
+  // includeUsage makes the SDK send stream_options.include_usage, which the
+  // enclave answers with a final usage frame inside the stream — without it
+  // OpenCode gets no token counts and can't price requests.
   return createOpenAICompatible({ name, baseURL: havenApiRoot, fetch: havenFetch, includeUsage: true });
 }

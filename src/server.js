@@ -7,6 +7,8 @@
 // The caller owns credential resolution and process lifecycle; this module owns
 // routing, relay wiring, and the loopback safety guard.
 import http from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS } from "./relay.js";
 import { DEFAULT_BASE_URL, DEFAULT_PORT, MODEL_IDS } from "./defaults.js";
 
@@ -98,12 +100,25 @@ export function createProxyServer({
 
     if (result.usage) res.setHeader(USAGE_HEADER, result.usage);
 
-    if (result.wantStream) {
+    const writeSseHead = () =>
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
+
+    // The enclave's own SSE — pipe it through so the client sees tokens as they
+    // arrive. `pipeline` propagates backpressure and destroys the response if
+    // the upstream stream fails mid-flight.
+    if (result.stream) {
+      writeSseHead();
+      return pipeline(Readable.fromWeb(result.stream), res);
+    }
+
+    // Buffered completion. `wantStream` here means the deployment ignored
+    // `stream:true`, so synthesize the SSE the client is waiting on.
+    if (result.wantStream) {
+      writeSseHead();
       for (const line of sseLinesFor(result.completion, result.includeUsage)) res.write(line);
       return res.end();
     }

@@ -21,21 +21,11 @@ export const DEFAULT_TIMEOUT_MS = 300_000;
 // the error path can't hang either.
 const PROBE_TIMEOUT_MS = 10_000;
 
-// Force a buffered upstream response (stream:false): Haven meters via a cleartext
-// usage header it can only read on a non-streamed reply, so we always ask Haven
-// for the whole completion and re-synthesize the stream locally if the caller
-// wanted one. Returns the flags needed to shape the response.
-export function prepareUpstream(body) {
-  const wantStream = body.stream === true;
-  const includeUsage = wantStream && body.stream_options?.include_usage === true;
-  const upstreamBody = { ...body, stream: false };
-  delete upstreamBody.stream_options;
-  return { wantStream, includeUsage, upstreamBody };
-}
-
-// Re-emit a fully-buffered completion as OpenAI SSE lines (each a complete
-// `data: …\n\n` frame, terminated by `data: [DONE]`). Concatenation is lossless;
-// splitting content on word boundaries just makes it visually stream.
+// Fallback only: re-emit a fully-buffered completion as OpenAI SSE lines (each a
+// complete `data: …\n\n` frame, terminated by `data: [DONE]`). The streaming path
+// passes the enclave's own SSE through untouched; this covers a Haven deployment
+// that answers a streamed request with plain JSON instead. Concatenation is
+// lossless; splitting content on word boundaries just makes it visually stream.
 export function sseLinesFor(completion, includeUsage) {
   const lines = [];
   const { id, created, model } = completion;
@@ -68,6 +58,48 @@ export function sseLinesFor(completion, includeUsage) {
   }
   lines.push("data: [DONE]\n\n");
   return lines;
+}
+
+const abortedResult = () => ({
+  ok: false,
+  aborted: true,
+  error: {
+    status: 499,
+    message: "Request aborted by the client.",
+    type: "invalid_request_error",
+    code: "request_aborted",
+  },
+});
+
+const isEventStream = (res) =>
+  (res.headers.get("content-type") ?? "").toLowerCase().includes("text/event-stream");
+
+// Hand a streamed upstream body to the caller with the request deadline still
+// armed. relay() returns as soon as the response headers arrive, so disarming
+// there would leave a mid-stream hang uncovered — instead `disarm` runs when the
+// stream reaches any terminal state (end, error, or caller cancel).
+function guardStream(source, disarm) {
+  const reader = source.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          disarm();
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        disarm();
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      disarm();
+      return reader.cancel(reason);
+    },
+  });
 }
 
 // Process-wide fetch wrapper, consulted through AsyncLocalStorage.
@@ -319,11 +351,20 @@ async function fetchBalance(havenApiRoot, apiKey) {
 }
 
 // Create a Haven relay bound to one origin + API key. `relay(body, { signal })`
-// encrypts, relays, decrypts, and returns { ok, completion, usage, wantStream,
-// includeUsage } on success or { ok:false, error } (an OpenAI-style descriptor)
-// on failure. A caller-supplied AbortSignal cancels the upstream request (the
+// encrypts, relays, decrypts, and on success returns either
+//   { ok, wantStream: true, stream }              — the enclave's own SSE, passed through
+//   { ok, completion, usage, wantStream, includeUsage } — a buffered completion
+// or { ok:false, error } (an OpenAI-style descriptor) on failure. A streamed
+// request is relayed as-is: the enclave emits incremental SSE, the SDK decrypts
+// it chunk by chunk, and Haven meters the encrypted stream from the enclave's own
+// report — so `stream` is the raw upstream body and callers just forward the
+// bytes. Callers branch on `stream` being present, since a deployment that
+// answers a streamed request with plain JSON still lands on the buffered shape.
+// A caller-supplied AbortSignal cancels the upstream request (the
 // caller sees { ok:false, aborted:true }); each request also gets a `timeoutMs`
 // deadline so a hung enclave call can't hang the caller forever (surfaced as 504).
+// For a streamed reply that deadline covers the whole stream, not just its
+// headers (see guardStream).
 // Requests run concurrently: Haven now serves parallel inference per profile for
 // a well-funded key, so overlapping tool-calls fan out. A near-empty key (below
 // Haven's ~$2 threshold) is the exception — an overlapping request there gets a
@@ -395,23 +436,28 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
     outcome.captured.payload.details?.status === 422;
 
   async function relay(body, { signal } = {}) {
-    const { wantStream, includeUsage, upstreamBody } = prepareUpstream(body);
+    const wantStream = body.stream === true;
+    const includeUsage = wantStream && body.stream_options?.include_usage === true;
 
-    let timeoutSignal = null;
-    const outcome = await (async () => {
-      // If the client already went away (e.g. it aborted during body read),
-      // don't spend balance on a completion nobody will read.
-      if (signal?.aborted) return { abortedBeforeStart: true };
-      // Deadline for this request. Not AbortSignal.timeout: its timer is unref'd,
-      // so with nothing else keeping the event loop alive the process would exit
-      // before the deadline ever fired.
-      const timeoutCtrl = new AbortController();
-      timeoutSignal = timeoutCtrl.signal;
-      const timer = setTimeout(
-        () => timeoutCtrl.abort(new DOMException("Haven relay timed out", "TimeoutError")),
-        timeoutMs,
-      );
-      try {
+    // If the client already went away (e.g. it aborted during body read),
+    // don't spend balance on a completion nobody will read.
+    if (signal?.aborted) return abortedResult();
+
+    // Deadline for this request. Not AbortSignal.timeout: its timer is unref'd,
+    // so with nothing else keeping the event loop alive the process would exit
+    // before the deadline ever fired. It stays armed until either this function
+    // returns a buffered result or (for a passthrough stream) the stream ends.
+    const timeoutCtrl = new AbortController();
+    const timeoutSignal = timeoutCtrl.signal;
+    const timer = setTimeout(
+      () => timeoutCtrl.abort(new DOMException("Haven relay timed out", "TimeoutError")),
+      timeoutMs,
+    );
+    const disarm = () => clearTimeout(timer); // idempotent: guardStream may call it twice
+    let streamOwnsDeadline = false;
+
+    try {
+      const outcome = await (async () => {
         const effective = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
         // The signal cancels the socket in the common case, but a hang can also
         // live in a fetch the signal can't reach (e.g. an attestation started by
@@ -424,113 +470,122 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
           if (effective.aborted) return done();
           effective.addEventListener("abort", done, { once: true });
         });
-        let result = await Promise.race([sendWithCapture(upstreamBody, effective), onAbort]);
+        let result = await Promise.race([sendWithCapture(body, effective), onAbort]);
         if (isWrappedStaleKeyError(result) && !effective.aborted) {
           // Run the SDK's own rotation recovery by hand, once, within the same
           // deadline: drop the cached attestation and re-encrypt to the current key.
           client.reset();
-          result = await Promise.race([sendWithCapture(upstreamBody, effective), onAbort]);
+          result = await Promise.race([sendWithCapture(body, effective), onAbort]);
         }
         return result;
-      } finally {
-        clearTimeout(timer);
-      }
-    })();
-    const { upstream, err, captured, abortedBeforeStart } = outcome;
+      })();
+      const { upstream, err, captured } = outcome;
 
-    if (abortedBeforeStart || (err && signal?.aborted)) {
-      return {
-        ok: false,
-        aborted: true,
-        error: {
-          status: 499,
-          message: "Request aborted by the client.",
-          type: "invalid_request_error",
-          code: "request_aborted",
-        },
-      };
-    }
-    if (err && timeoutSignal?.aborted) {
-      return {
-        ok: false,
-        error: {
-          status: 504,
-          message: `Haven relay timed out after ${Math.round(timeoutMs / 1000)}s waiting for the enclave response.`,
-          type: "api_error",
-          code: "relay_timeout",
-        },
-      };
-    }
-    if (err) {
-      if (captured) {
-        const error = classifyHavenError(captured.status, captured.payload);
-        // Haven forwards the enclave's Retry-After on rate limits; keep it on
-        // the descriptor so callers can emit it and clients back off properly.
-        if (captured.retryAfter) error.retryAfter = captured.retryAfter;
-        return { ok: false, error };
-      }
-      // No captured HTTP response (attestation failure, network, undecodable body).
-      // Distinguish the common empty-balance case so the caller gets a clear message.
-      const balance = await fetchBalance(havenApiRoot, apiKey);
-      if (balance !== null && balance <= 0) {
+      if (err && signal?.aborted) return abortedResult();
+      if (err && timeoutSignal.aborted) {
         return {
           ok: false,
           error: {
-            status: 402,
-            message: INSUFFICIENT_BALANCE_MSG,
-            type: "insufficient_quota",
-            code: "insufficient_balance",
+            status: 504,
+            message: `Haven relay timed out after ${Math.round(timeoutMs / 1000)}s waiting for the enclave response.`,
+            type: "api_error",
+            code: "relay_timeout",
           },
         };
       }
-      // Deliberately generic: raw SDK error text can carry transport/attestation
-      // internals we don't surface to callers.
-      return {
-        ok: false,
-        error: {
-          status: 502,
-          message: "Haven relay failed: could not reach or verify the enclave.",
-          type: "api_error",
-          code: null,
-        },
-      };
-    }
-
-    if (!upstream.ok) {
-      let payload = {};
-      try {
-        payload = JSON.parse(await upstream.text());
-      } catch {
-        /* opaque/undecryptable body — fall back to status alone */
+      if (err) {
+        if (captured) {
+          const error = classifyHavenError(captured.status, captured.payload);
+          // Haven forwards the enclave's Retry-After on rate limits; keep it on
+          // the descriptor so callers can emit it and clients back off properly.
+          if (captured.retryAfter) error.retryAfter = captured.retryAfter;
+          return { ok: false, error };
+        }
+        // No captured HTTP response (attestation failure, network, undecodable body).
+        // Distinguish the common empty-balance case so the caller gets a clear message.
+        const balance = await fetchBalance(havenApiRoot, apiKey);
+        if (balance !== null && balance <= 0) {
+          return {
+            ok: false,
+            error: {
+              status: 402,
+              message: INSUFFICIENT_BALANCE_MSG,
+              type: "insufficient_quota",
+              code: "insufficient_balance",
+            },
+          };
+        }
+        // Deliberately generic: raw SDK error text can carry transport/attestation
+        // internals we don't surface to callers.
+        return {
+          ok: false,
+          error: {
+            status: 502,
+            message: "Haven relay failed: could not reach or verify the enclave.",
+            type: "api_error",
+            code: null,
+          },
+        };
       }
-      const error = classifyHavenError(upstream.status, payload);
-      const retryAfter = upstream.headers.get("retry-after");
-      if (retryAfter) error.retryAfter = retryAfter;
-      return { ok: false, error };
-    }
 
-    let completion;
-    try {
-      completion = await upstream.json();
-    } catch {
+      if (!upstream.ok) {
+        let payload = {};
+        try {
+          payload = JSON.parse(await upstream.text());
+        } catch {
+          /* opaque/undecryptable body — fall back to status alone */
+        }
+        const error = classifyHavenError(upstream.status, payload);
+        const retryAfter = upstream.headers.get("retry-after");
+        if (retryAfter) error.retryAfter = retryAfter;
+        return { ok: false, error };
+      }
+
+      // Streamed reply: hand the enclave's SSE straight to the caller. Guard on
+      // the content type rather than on `wantStream` alone — a Haven deployment
+      // that ignores `stream:true` answers with plain JSON, which falls through
+      // to the buffered path below and gets re-synthesized into SSE there.
+      if (wantStream && isEventStream(upstream)) {
+        if (!upstream.body) {
+          return {
+            ok: false,
+            error: {
+              status: 502,
+              message: "Haven returned an empty response stream.",
+              type: "api_error",
+              code: null,
+            },
+          };
+        }
+        streamOwnsDeadline = true;
+        return { ok: true, wantStream: true, stream: guardStream(upstream.body, disarm) };
+      }
+
+      let completion;
+      try {
+        completion = await upstream.json();
+      } catch {
+        return {
+          ok: false,
+          error: {
+            status: 502,
+            message: "Could not decode the Haven response.",
+            type: "api_error",
+            code: null,
+          },
+        };
+      }
+
       return {
-        ok: false,
-        error: {
-          status: 502,
-          message: "Could not decode the Haven response.",
-          type: "api_error",
-          code: null,
-        },
+        ok: true,
+        completion,
+        usage: upstream.headers.get(USAGE_HEADER),
+        wantStream,
+        includeUsage,
       };
+    } finally {
+      if (!streamOwnsDeadline) disarm();
     }
-
-    return {
-      ok: true,
-      completion,
-      usage: upstream.headers.get(USAGE_HEADER),
-      wantStream,
-      includeUsage,
-    };
   }
 
   return {
