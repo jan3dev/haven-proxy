@@ -194,13 +194,56 @@ describe("ensureOpencodeProvider", () => {
     assert.ok(read().provider["haven-local"]);
   });
 
-  test("re-registers when a model's cost is outdated", () => {
+  test("re-registers when fetched costs differ from what's on disk", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL);
+    const costs = { [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } };
+
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, { costs }).stale, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, true);
+    const doc = read();
+    for (const id of ["haven", "haven-local"]) {
+      assert.deepEqual(doc.provider[id].models[MODEL_IDS[0]].cost, costs[MODEL_IDS[0]]);
+      assert.deepEqual(doc.provider[id].models[MODEL_IDS[1]].cost, DEFAULT_COST); // uncovered id keeps its price
+    }
+    // Same fetched costs again → nothing to do.
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, false);
+  });
+
+  test("a fetched price repairs a hand-edited cost; unknown ids are ignored", () => {
     saveOpencodeProvider(DEFAULT_BASE_URL);
     const doc = read();
-    doc.provider.haven.models[MODEL_IDS[0]].cost = { input: 1.25, output: 5.25 };
+    doc.provider.haven.models[MODEL_IDS[0]].cost = { input: 99, output: 99 };
     write(doc);
 
-    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL).stale, true);
+    const costs = { [MODEL_IDS[0]]: DEFAULT_COST, "not-a-haven-model": { input: 1, output: 1 } };
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, true);
+    const repaired = read();
+    assert.deepEqual(repaired.provider.haven.models[MODEL_IDS[0]].cost, DEFAULT_COST);
+    assert.equal("not-a-haven-model" in repaired.provider.haven.models, false);
+  });
+
+  test("without fetched costs, prices already on disk survive a re-ensure", () => {
+    const costs = { [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } };
+    saveOpencodeProvider(DEFAULT_BASE_URL, { costs });
+
+    // Offline refresh (no costs): the previously fetched price must not regress.
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL).changed, false);
+    assert.deepEqual(read().provider.haven.models[MODEL_IDS[0]].cost, costs[MODEL_IDS[0]]);
+
+    // A missing entry still gets repaired, and the price still survives the rewrite.
+    const doc = read();
+    delete doc.provider["haven-local"];
+    write(doc);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL).changed, true);
+    assert.deepEqual(read().provider["haven-local"].models[MODEL_IDS[0]].cost, costs[MODEL_IDS[0]]);
+  });
+
+  test("an invalid on-disk cost falls back to the catalog default", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL);
+    const doc = read();
+    doc.provider.haven.models[MODEL_IDS[0]].cost = { input: "1.25", output: 5.25 }; // string snuck in
+    write(doc);
+
     assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL).changed, true);
     assert.deepEqual(read().provider.haven.models[MODEL_IDS[0]].cost, DEFAULT_COST);
   });

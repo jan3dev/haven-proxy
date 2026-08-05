@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 // (which passes --env-file=.env explicitly). On Windows there is no shell-level
 // equivalent, so without this the binary silently starts with no key.
 try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
-import { DEFAULT_TIMEOUT_MS, validateKey } from "./relay.js";
+import { DEFAULT_TIMEOUT_MS, validateKey, fetchPricing } from "./relay.js";
 import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
 import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
 import { createProxyServer, DEFAULT_PORT } from "./server.js";
@@ -113,9 +113,17 @@ if (subcommand === "login") {
         console.log(`[haven-proxy] Credentials saved to ${path}`);
         const proxyPort = Number(values.port) || DEFAULT_PORT;
         const ocTarget = opencodeConfigPath();
+        // Best-effort: login must never fail because pricing was unreachable.
+        const pricing = await fetchPricing(havenApiRoot);
+        if (!pricing.ok) {
+          console.warn("[haven-proxy] Could not fetch current model prices — using previously saved/default prices.");
+        }
         console.log(`[haven-proxy] Writing Haven providers to ${ocTarget}…`);
         try {
-          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(baseURL, { proxyPort });
+          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(baseURL, {
+            proxyPort,
+            costs: pricing.ok ? pricing.costs : undefined,
+          });
           const preserved = otherProviders.length
             ? `(preserved: ${otherProviders.join(", ")})`
             : existed ? "(no other providers)" : "(new file)";

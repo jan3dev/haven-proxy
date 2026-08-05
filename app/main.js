@@ -25,7 +25,7 @@ import {
   pruneLegacyOpencodeConfig,
   DEFAULT_BASE_URL,
 } from "haven-proxy/config";
-import { validateKey } from "haven-proxy/relay";
+import { validateKey, fetchPricing } from "haven-proxy/relay";
 import { logPath, windowsLauncherPath } from "haven-proxy/daemon";
 import { trayIcon } from "./tray-icon.js";
 
@@ -109,6 +109,9 @@ app.whenReady().then(async () => {
   } else {
     openKeyWindow();
   }
+  // A long-running tray should pick up backend price changes without a restart;
+  // ensureOpencodeProvider only writes when something actually changed.
+  setInterval(() => syncOpencode(), 24 * 60 * 60 * 1000).unref();
 });
 
 // The Windows installer writes an option seed on fresh installs (see
@@ -134,17 +137,27 @@ function consumeInstallOptions() {
 
 // --- OpenCode registration --------------------------------------------------
 
+// Best-effort price fetch for the OpenCode registrations. `undefined` on
+// failure keeps previously written (or default) prices — see resolveCosts in
+// the package's config.js.
+async function fetchCosts(baseURL) {
+  const root = `${(baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "")}/api/v1/haven`;
+  const pricing = await fetchPricing(root);
+  return pricing.ok ? pricing.costs : undefined;
+}
+
 // Re-assert the provider entries on every start: an install from before the
 // config-path fix, or an OpenCode config the user wiped, would otherwise stay
 // broken forever with nothing to hint at why Haven models never show up.
-function syncOpencode() {
+async function syncOpencode() {
   opencodeWarning = "";
   const { cfg } = loadConfig();
   if (!cfg.apiKey) return; // keyless entries would list models that fail on first use
   if (cfg.registerOpencode === false) return; // user opted out — the toggle already removed the entries
   const log = ensureLog();
+  const costs = await fetchCosts(cfg.baseURL);
   try {
-    const { path, changed } = ensureOpencodeProvider(cfg.baseURL);
+    const { path, changed } = ensureOpencodeProvider(cfg.baseURL, { costs });
     if (changed) log.info(`registered Haven providers in ${path}`);
     // cwd is wherever Electron was launched, so only check the global-dir override.
     const [shadow] = opencodeShadowingConfigs(path, { cwd: null });
@@ -157,10 +170,11 @@ function syncOpencode() {
   }
 }
 
-function toggleOpencode(enabled) {
+async function toggleOpencode(enabled) {
   const { cfg } = loadConfig();
+  const costs = enabled ? await fetchCosts(cfg.baseURL) : undefined;
   try {
-    if (enabled) saveOpencodeProvider(cfg.baseURL);
+    if (enabled) saveOpencodeProvider(cfg.baseURL, { costs });
     else removeOpencodeProvider();
     // Persist only after the write succeeded, so flag and on-disk state converge.
     saveConfig({ ...cfg, registerOpencode: enabled });
@@ -392,7 +406,10 @@ async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted
   let warning =
     result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
   try {
-    if (cfg.registerOpencode !== false) ensureOpencodeProvider(baseURL);
+    // The backend may have changed, so fetch that backend's prices.
+    if (cfg.registerOpencode !== false) {
+      ensureOpencodeProvider(baseURL, { costs: await fetchCosts(baseURL) });
+    }
   } catch (err) {
     warning = `Saved, but could not update the OpenCode config: ${err.message}`;
   }

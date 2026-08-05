@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { DEFAULT_BASE_URL, DEFAULT_PORT, opencodeModels } from "./defaults.js";
+import { DEFAULT_BASE_URL, DEFAULT_PORT, MODELS, opencodeModels } from "./defaults.js";
 
 export { DEFAULT_BASE_URL };
 
@@ -145,7 +145,7 @@ function assertWritable(path) {
 // No apiKey in either entry: the in-process provider falls back to
 // ~/.haven-proxy/config.json (mode 0600) and the local proxy carries the key
 // itself, so nothing secret lands in a config file users share and diff.
-function havenProviders(baseURL, proxyPort) {
+function havenProviders(baseURL, proxyPort, costs) {
   const origin = (baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "");
   return {
     haven: {
@@ -153,37 +153,63 @@ function havenProviders(baseURL, proxyPort) {
       name: "Haven",
       // Only pin baseURL when it isn't the default; the provider resolves it otherwise.
       ...(origin !== DEFAULT_BASE_URL && { options: { baseURL: `${origin}/api/v1/haven` } }),
-      models: opencodeModels(),
+      models: opencodeModels(costs),
     },
     "haven-local": {
       npm: "@ai-sdk/openai-compatible",
       name: "Haven (local proxy)",
       options: { baseURL: `http://127.0.0.1:${proxyPort}/v1` },
-      models: opencodeModels(),
+      models: opencodeModels(costs),
     },
   };
 }
 
+// A valid cost block already on disk, or null. Only the "haven" entry is
+// consulted — both managed entries are always written together, so they agree.
+function existingCost(doc, id) {
+  const cost = doc.provider?.haven?.models?.[id]?.cost;
+  return Number.isFinite(cost?.input) && cost.input >= 0 &&
+    Number.isFinite(cost?.output) && cost.output >= 0
+    ? { input: cost.input, output: cost.output }
+    : null;
+}
+
+// Per-model price resolution: freshly fetched → already on disk → catalog
+// default. The middle step keeps an offline re-login/tray-start from regressing
+// prices a previous successful fetch already wrote. Status and write both go
+// through here, so `ensure` stays idempotent.
+function resolveCosts(doc, costs) {
+  return Object.fromEntries(
+    MODELS.map(({ id, cost }) => [id, costs?.[id] ?? existingCost(doc, id) ?? cost]),
+  );
+}
+
 // Compare only what matters: on-disk key order is arbitrary, and extra fields a
 // user added by hand are theirs to keep. A leftover options.apiKey from an older
-// version counts as a mismatch so the next write scrubs it. Cost counts too, so
-// a price change here propagates to existing registrations on the next ensure.
+// version counts as a mismatch so the next write scrubs it. Name, limits and
+// cost count too, so a price change (fetched or catalog) propagates to existing
+// registrations on the next ensure.
 function sameEntry(actual, want) {
   return (
     actual?.npm === want.npm &&
     actual?.options?.baseURL === want.options?.baseURL &&
     !("apiKey" in (actual?.options ?? {})) &&
     Object.keys(actual?.models ?? {}).sort().join() === Object.keys(want.models).sort().join() &&
-    Object.entries(want.models).every(
-      ([id, m]) =>
-        actual.models[id]?.cost?.input === m.cost.input &&
-        actual.models[id]?.cost?.output === m.cost.output,
-    )
+    Object.entries(want.models).every(([id, m]) => {
+      const a = actual.models[id];
+      return (
+        a?.name === m.name &&
+        JSON.stringify(a?.limit) === JSON.stringify(m.limit) &&
+        a?.cost?.input === m.cost.input &&
+        a?.cost?.output === m.cost.output
+      );
+    })
   );
 }
 
 // Is our pair of entries present, and does it match what we'd write now?
-export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT } = {}) {
+// `costs` (optional, from fetchPricing) feeds the resolution in resolveCosts.
+export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT, costs } = {}) {
   const path = opencodeConfigPath();
   let doc;
   try {
@@ -191,7 +217,7 @@ export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT } = {
   } catch {
     return { path, registered: false, stale: true }; // malformed: let a write report why
   }
-  const want = havenProviders(baseURL, proxyPort);
+  const want = havenProviders(baseURL, proxyPort, resolveCosts(doc, costs));
   const registered = MANAGED_IDS.every((id) => Boolean(doc.provider?.[id]));
   const stale = !registered || MANAGED_IDS.some((id) => !sameEntry(doc.provider[id], want[id]));
   return { path, registered, stale };
@@ -199,24 +225,24 @@ export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT } = {
 
 // Merge both Haven provider entries into the global OpenCode config. Creates the
 // file if absent; preserves every other provider and top-level key.
-export function saveOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT } = {}) {
+export function saveOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, costs } = {}) {
   const path = opencodeConfigPath();
   assertWritable(path);
   const { doc, existed } = readJsonDoc(path);
   const otherProviders = Object.keys(doc.provider || {}).filter((k) => !MANAGED_IDS.includes(k));
   if (!doc.$schema) doc.$schema = OPENCODE_SCHEMA;
   // Spread over the old entries so a plaintext key an older version wrote is dropped.
-  doc.provider = { ...doc.provider, ...havenProviders(baseURL, proxyPort) };
+  doc.provider = { ...doc.provider, ...havenProviders(baseURL, proxyPort, resolveCosts(doc, costs)) };
   writeJsonDoc(path, doc);
   return { path, existed, otherProviders };
 }
 
 // Registration has to be re-assertable: users who installed before the path fix,
 // or who wiped their OpenCode config, would otherwise never be repaired.
-export function ensureOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT } = {}) {
-  const { path, registered, stale } = opencodeProviderStatus(baseURL, { proxyPort });
+export function ensureOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, costs } = {}) {
+  const { path, registered, stale } = opencodeProviderStatus(baseURL, { proxyPort, costs });
   if (registered && !stale) return { path, changed: false };
-  return { ...saveOpencodeProvider(baseURL, { proxyPort }), changed: true };
+  return { ...saveOpencodeProvider(baseURL, { proxyPort, costs }), changed: true };
 }
 
 // Remove both Haven provider entries from the global OpenCode config on logout.

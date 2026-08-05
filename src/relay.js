@@ -202,12 +202,22 @@ export function classifyHavenError(status, payload = {}) {
   }
   switch (status) {
     case 400:
-      // Haven returns 400 (not 402) when the account balance is empty.
+      // Haven returns 400 (not 402) for an empty balance, but also for other
+      // rejected requests (e.g. an oversized payload) — the error_code in the
+      // body is what actually distinguishes them.
+      if (payload.error_code === "HAVEN_BALANCE_INSUFFICIENT") {
+        return {
+          status: 402,
+          message: INSUFFICIENT_BALANCE_MSG,
+          type: "insufficient_quota",
+          code: "insufficient_balance",
+        };
+      }
       return {
-        status: 402,
-        message: INSUFFICIENT_BALANCE_MSG,
-        type: "insufficient_quota",
-        code: "insufficient_balance",
+        status: 400,
+        message: detail || "Haven rejected the request (HTTP 400).",
+        type: "invalid_request_error",
+        code: payload.error_code || null,
       };
     case 401:
       return {
@@ -267,6 +277,38 @@ export async function validateKey(havenApiRoot, apiKey) {
   } catch {
     return { ok: false, reason: "unreachable" };
   }
+}
+
+// Probe the public pricing endpoint (no API key — it's world-readable) and
+// return per-model prices in USD per 1M tokens. The backend serializes decimals
+// as strings, so parse defensively and drop anything malformed. Returns
+//   { ok: true,  costs: { [modelId]: { input, output } } }
+//   { ok: false, reason: "unreachable" | "bad_response" }
+export async function fetchPricing(havenApiRoot) {
+  let entries;
+  try {
+    const res = await globalThis.fetch(`${havenApiRoot}/pricing/`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return { ok: false, reason: "unreachable" };
+    entries = await res.json();
+  } catch {
+    return { ok: false, reason: "unreachable" };
+  }
+  if (!Array.isArray(entries)) return { ok: false, reason: "bad_response" };
+  // Number("") is 0, so blank strings must be rejected before conversion.
+  const price = (v) =>
+    (typeof v === "string" && v.trim() !== "") || typeof v === "number" ? Number(v) : NaN;
+  const costs = {};
+  for (const entry of entries) {
+    if (typeof entry?.id !== "string" || !entry.id) continue;
+    const input = price(entry.input_cost);
+    const output = price(entry.output_cost);
+    if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) continue;
+    costs[entry.id] = { input, output };
+  }
+  if (!Object.keys(costs).length) return { ok: false, reason: "bad_response" };
+  return { ok: true, costs };
 }
 
 // Kept for the internal relay fallback path (balance probe on encrypted-relay failure).

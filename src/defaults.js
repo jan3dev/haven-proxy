@@ -22,6 +22,10 @@ export const MODELS = [
 
 export const MODEL_IDS = MODELS.map((m) => m.id);
 
-// Shape OpenCode expects under provider.<id>.models.
-export const opencodeModels = () =>
-  Object.fromEntries(MODELS.map(({ id, name, limit, cost }) => [id, { name, limit, cost }]));
+// Shape OpenCode expects under provider.<id>.models. `costs` optionally
+// overrides prices per model id (e.g. fetched from the backend's pricing
+// endpoint); models it doesn't cover keep their catalog default.
+export const opencodeModels = (costs) =>
+  Object.fromEntries(
+    MODELS.map(({ id, name, limit, cost }) => [id, { name, limit, cost: costs?.[id] ?? cost }]),
+  );

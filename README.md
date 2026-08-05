@@ -167,7 +167,9 @@ Restart OpenCode after editing, then pick the `haven/gpt-oss-120b` model.
 
 > The `limit` values are best-effort defaults — adjust them to each model's real context/output
 > window if you hit truncation. `cost` is USD per 1M tokens and drives OpenCode's session cost
-> display; every Haven model is priced the same.
+> display. The values above are fallback defaults: `haven-proxy login` (and the tray app on
+> startup) fetches the current prices from the backend's public pricing endpoint and writes those
+> instead, so re-run `login` (or restart the tray app) to pick up a price change.
 
 
 

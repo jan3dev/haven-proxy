@@ -12,6 +12,7 @@ import {
   prepareUpstream,
   sseLinesFor,
   createSecureRelay,
+  fetchPricing,
   INSUFFICIENT_BALANCE_MSG,
 } from "../src/relay.js";
 
@@ -64,13 +65,32 @@ describe("classifyHavenError", () => {
   });
 
   test("Haven's own statuses keep their meanings", () => {
-    assert.equal(classifyHavenError(400, {}).code, "insufficient_balance");
+    assert.equal(
+      classifyHavenError(400, { error_code: "HAVEN_BALANCE_INSUFFICIENT" }).code,
+      "insufficient_balance",
+    );
     assert.equal(classifyHavenError(402, {}).code, "insufficient_balance");
-    assert.equal(classifyHavenError(400, {}).message, INSUFFICIENT_BALANCE_MSG);
+    assert.equal(
+      classifyHavenError(400, { error_code: "HAVEN_BALANCE_INSUFFICIENT" }).message,
+      INSUFFICIENT_BALANCE_MSG,
+    );
     assert.equal(classifyHavenError(401, {}).code, "invalid_api_key");
     assert.equal(classifyHavenError(409, {}).code, "request_in_progress");
     assert.equal(classifyHavenError(418, {}).status, 502);
     assert.equal(classifyHavenError(503, {}).status, 503);
+  });
+
+  test("400 without HAVEN_BALANCE_INSUFFICIENT → passed through as invalid_request_error", () => {
+    // e.g. Ankara's VALIDATION_ERROR for an oversized payload — a real 400 that
+    // isn't a balance problem and must not be reported as one.
+    const err = classifyHavenError(400, {
+      error_code: "VALIDATION_ERROR",
+      message: "Payload exceeds 262144 bytes.",
+    });
+    assert.equal(err.status, 400);
+    assert.equal(err.type, "invalid_request_error");
+    assert.equal(err.code, "VALIDATION_ERROR");
+    assert.equal(err.message, "Payload exceeds 262144 bytes.");
   });
 });
 
@@ -115,6 +135,87 @@ describe("sseLinesFor", () => {
   });
 });
 
+describe("fetchPricing", () => {
+  const ROOT = "https://ankara.example.com/api/v1/haven";
+  const realFetch = globalThis.fetch;
+  const withFetch = async (impl, run) => {
+    globalThis.fetch = impl;
+    try {
+      return await run();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+  const jsonResponse = (body, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  test("parses string decimals into numbers, keyed by model id", async () => {
+    let url;
+    const result = await withFetch(
+      async (input) => {
+        url = String(input);
+        return jsonResponse([
+          { id: "kimi-k2-6", name: "Kimi K2.6", input_cost: "1.250000", output_cost: "5.250000" },
+          { id: "gpt-oss-120b", name: "GPT-OSS 120B", input_cost: "0.900000", output_cost: "3.600000" },
+        ]);
+      },
+      () => fetchPricing(ROOT),
+    );
+    assert.equal(url, `${ROOT}/pricing/`);
+    assert.deepEqual(result, {
+      ok: true,
+      costs: {
+        "kimi-k2-6": { input: 1.25, output: 5.25 },
+        "gpt-oss-120b": { input: 0.9, output: 3.6 },
+      },
+    });
+  });
+
+  test("network error and non-2xx → unreachable", async () => {
+    const down = await withFetch(
+      async () => { throw new TypeError("fetch failed"); },
+      () => fetchPricing(ROOT),
+    );
+    assert.deepEqual(down, { ok: false, reason: "unreachable" });
+
+    const err500 = await withFetch(
+      async () => jsonResponse({ detail: "boom" }, 500),
+      () => fetchPricing(ROOT),
+    );
+    assert.deepEqual(err500, { ok: false, reason: "unreachable" });
+  });
+
+  test("skips malformed entries, keeps valid ones", async () => {
+    const result = await withFetch(
+      async () =>
+        jsonResponse([
+          { id: "glm-5-2", input_cost: "2.00", output_cost: 7 }, // number is fine too
+          { id: "", input_cost: "1", output_cost: "1" },          // empty id
+          { id: "no-prices" },                                    // missing costs
+          { id: "blank", input_cost: "", output_cost: "1" },      // blank string is not 0
+          { id: "negative", input_cost: "-1", output_cost: "1" },
+          "not even an object",
+        ]),
+      () => fetchPricing(ROOT),
+    );
+    assert.deepEqual(result, { ok: true, costs: { "glm-5-2": { input: 2, output: 7 } } });
+  });
+
+  test("non-array body or nothing usable → bad_response", async () => {
+    const notArray = await withFetch(
+      async () => jsonResponse({ prices: [] }),
+      () => fetchPricing(ROOT),
+    );
+    assert.deepEqual(notArray, { ok: false, reason: "bad_response" });
+
+    const allInvalid = await withFetch(
+      async () => jsonResponse([{ id: "x", input_cost: "NaN", output_cost: "1" }]),
+      () => fetchPricing(ROOT),
+    );
+    assert.deepEqual(allInvalid, { ok: false, reason: "bad_response" });
+  });
+});
+
 describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
   const COMPLETION = {
     id: "cmpl-1",
@@ -152,7 +253,7 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
           break;
         case "balance400":
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error_code: "INSUFFICIENT_BALANCE", message: "empty" }));
+          res.end(JSON.stringify({ error_code: "HAVEN_BALANCE_INSUFFICIENT", message: "empty" }));
           break;
         default:
           res.writeHead(200, {
