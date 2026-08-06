@@ -97,6 +97,14 @@ npm start             # dev run (tray icon, console attached — packaged builds
 npm run dist          # → app/dist/HavenProxy-Setup-<version>.exe (or .dmg / .AppImage)
 ```
 
+`npm run dist` esbuilds `app/main.js` into `app/.bundle` and packages that directory, so run it via
+the script rather than calling `electron-builder` directly. To keep the installer down the build
+ships only the `en-US` Chromium locale and drops Chromium's 20MB bundled `LICENSES.chromium.html`.
+The app embeds [Electron](https://github.com/electron/electron) (MIT) and Chromium (BSD-3-Clause);
+Electron's `LICENSE` still ships with it, and Chromium's full third-party notices are the ones
+listed at `chrome://credits` in any Chromium build and included in the upstream
+[Electron release archives](https://github.com/electron/electron/releases).
+
 Don't enable both the app's "Launch at login" and the CLI's `haven-proxy startup on` — they'd
 race for the port at login (the app warns about this).
 

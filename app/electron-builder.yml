@@ -1,23 +1,22 @@
 appId: com.jan3.haven-proxy
 productName: Haven Proxy
 directories:
+  # Not app/ itself: scripts/prepack.mjs esbuilds everything into .bundle first,
+  # so the package holds four files instead of a 24MB node_modules tree. Always
+  # build via `npm run dist`, which runs that step first.
+  #
+  # This only stays true because haven-proxy is a devDependency of the app — the
+  # module collector ignores dev deps, and if it ever collected that file:..
+  # symlink it would dereference the whole repo into the package (SEA binary,
+  # nested builds, .env). build/after-pack.cjs fails the build if that happens.
+  app: .bundle
   output: dist
-files:
-  - main.js
-  - tray-icon.js
-  - preload.cjs
-  - key-window.html
-  # The haven-proxy dep is a file:.. symlink to the repo root — without these
-  # excludes the WHOLE repo gets dereferenced into the package, including the
-  # local .env (real API key!), the 96MB SEA exe, and app/dist recursively.
-  # Only src/ and package.json may ship. Verify after any change:
-  #   npx asar list dist/win-unpacked/resources/app.asar | grep haven-proxy
-  - "!node_modules/haven-proxy/{app,dist,scripts,test,node_modules}/**"
-  - "!node_modules/haven-proxy/.*"
-  - "!node_modules/haven-proxy/.*/**"
-  - "!node_modules/haven-proxy/*.md"
-  - "!node_modules/haven-proxy/{opencode.json,package-lock.json,sea-config.json}"
 asar: true
+# No i18n — drop the other 54 Chromium locale packs (~46MB).
+electronLanguages: ["en-US"]
+compression: maximum
+# Deletes Chromium's 20MB LICENSES.chromium.html; see README for attribution.
+afterPack: ./build/after-pack.cjs
 win:
   # NSIS, not portable — portable exes extract to %TEMP%, so the launch-at-login
   # registry entry would point at a temp path.
