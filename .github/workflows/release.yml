@@ -46,11 +46,23 @@ jobs:
 
       - run: npm ci
 
+      # The binary and installer carry the tag's version, not whatever happens to
+      # be committed. Runs after npm ci (which validates package.json vs the lock)
+      # and is skipped on workflow_dispatch, where committed versions stand.
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/set-version.mjs "${{ github.ref_name }}"
+
       - run: npm run build:exe
 
-      - name: Smoke test (help)
+      - name: Smoke test (help + version)
         shell: bash
-        run: ./${{ matrix.built }} help
+        run: |
+          ./${{ matrix.built }} help
+          ./${{ matrix.built }} --version
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "$(./${{ matrix.built }} --version)" = "haven-proxy ${GITHUB_REF_NAME#v}"
+          fi
 
       - name: Smoke test (start → health → models → status → stop)
         shell: bash
@@ -118,6 +130,12 @@ jobs:
 
       - run: npm install
         working-directory: app
+
+      # After both installs: electron-builder reads app/package.json's version at
+      # build time, and stamping earlier would just make npm install rewrite it.
+      - name: Stamp version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/set-version.mjs "${{ github.ref_name }}"
 
       - run: npx electron-builder ${{ matrix.build }}
         working-directory: app
