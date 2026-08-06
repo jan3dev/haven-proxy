@@ -1,7 +1,7 @@
 {
   "name": "haven-proxy-app",
   "productName": "Haven Proxy",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Tray app that runs the Haven encrypted-inference proxy in the background",
   "type": "module",

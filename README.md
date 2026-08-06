@@ -138,12 +138,12 @@ other than 3301.
       "npm": "github:jan3dev/haven-proxy#semver:0.x",
       "name": "Haven",
       "models": {
-        "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.80, "output": 6.30 } },
+        "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.18, "output": 0.72 } },
+        "gpt-oss-safeguard-120b": { "name": "GPT-OSS Safeguard 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.18, "output": 0.72 } },
         "kimi-k2-6": { "name": "Kimi K2.6 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.80, "output": 6.30 } },
         "glm-5-2": { "name": "GLM-5.2 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.80, "output": 6.30 } },
-        "gemma4-31b": { "name": "Gemma 4 31B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.80, "output": 6.30 } },
-        "llama3-3-70b": { "name": "Llama 3.3 70B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.80, "output": 6.30 } },
-        "qwen3-vl-30b": { "name": "Qwen3-VL 30B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 1.80, "output": 6.30 } }
+        "gemma4-31b": { "name": "Gemma 4 31B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.48, "output": 1.20 } },
+        "llama3-3-70b": { "name": "Llama 3.3 70B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 2.10, "output": 3.30 } }
       }
     }
   }
@@ -219,6 +219,7 @@ listings. If you'd rather manage the process yourself, PM2 still works
 ```bash
 haven-proxy validate          # check key validity and account balance
 haven-proxy logout            # remove saved credentials
+haven-proxy --version         # print the version (matches the release it came from)
 haven-proxy --help            # show all options
 ```
 
@@ -279,7 +280,12 @@ the full proxy CLI with the Node runtime baked in:
 ```bash
 # macOS / Linux: make it executable first
 chmod +x haven-proxy-macos-arm64
+
+./haven-proxy-macos-arm64 --version   # which release this binary is from
 ```
+
+Filenames stay the same across releases (so `releases/latest/download/haven-proxy-win-x64.exe`
+always works) — the release tag is baked into the binary and reported by `--version`.
 
 All CLI commands work identically to the npm install and share the same
 `~/.haven-proxy/config.json`, so the binary and a CLI install can coexist.
@@ -292,6 +298,10 @@ All CLI commands work identically to the npm install and share the same
 
 To build locally instead: `npm ci && npm run build:exe` → `dist/haven-proxy(.exe)` for the
 platform you're on (SEA doesn't cross-compile; CI builds each OS on its own runner).
+
+Releases carry one version across the CLI, the binary and the installer: CI stamps it from the
+pushed `v*` tag, and `npm run version:set 0.4.0` bumps every `package.json` at once for the
+release commit.
 
 ## Why this exists
 

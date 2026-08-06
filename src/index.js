@@ -19,9 +19,10 @@ import { DEFAULT_TIMEOUT_MS, validateKey, fetchPricing } from "./relay.js";
 import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
 import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
 import { createProxyServer, DEFAULT_PORT } from "./server.js";
+import { VERSION } from "./version.js";
 
 const HELP = `
-haven-proxy — OpenAI-compatible localhost proxy for the Haven encrypted inference relay
+haven-proxy ${VERSION} — OpenAI-compatible localhost proxy for the Haven encrypted inference relay
 
 Usage:
   haven-proxy [command] [options]
@@ -37,6 +38,7 @@ Commands:
   stop                            Stop the background proxy
   status                          Show background proxy status and account balance
   startup on|off                  Start the proxy automatically at login (Windows; no arg: show state)
+  version                         Print the version and exit
   help                            Show this help
 
   (no command)                    Start the proxy in the foreground (same as serve)
@@ -60,6 +62,7 @@ Options (login):
 
 Global:
   -h, --help                      Show this help and exit
+  -v, --version                   Print the version and exit
 
 Credential resolution order: --api-key flag > HAVEN_API_KEY env var > ~/.haven-proxy/config.json
 `.trim();
@@ -67,6 +70,13 @@ Credential resolution order: --api-key flag > HAVEN_API_KEY env var > ~/.haven-p
 // Subcommand is the first non-flag argument (if any).
 const subcommand = !process.argv[2] || process.argv[2].startsWith("-") ? null : process.argv[2];
 const subArgs = subcommand ? process.argv.slice(3) : process.argv.slice(2);
+
+// Handled before the per-command parsers below: those run parseArgs in strict
+// mode and would reject --version as an unknown option.
+if (subcommand === "version" || subArgs.includes("--version") || subArgs.includes("-v")) {
+  console.log(`haven-proxy ${VERSION}`);
+  process.exit(0);
+}
 
 // The whole dispatch lives in main() rather than at module top level: the SEA
 // build (scripts/build-sea.mjs) bundles this file to CommonJS, where top-level
