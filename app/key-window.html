@@ -35,9 +35,12 @@
         cursor: pointer;
       }
       button:disabled { background: #9cc7f5; cursor: default; }
-      #status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+      #cancel { background: #eee; color: #333; margin-left: 8px; }
+      #status { font-size: 12px; margin-top: 10px; min-height: 32px; }
       #status.error { color: #c0392b; }
       #status.ok { color: #1e7d32; }
+      #status.confirm { color: #a15c00; }
+      #status code { font-family: ui-monospace, monospace; }
       details {
         margin-top: 16px;
         border-top: 1px solid #eee;
@@ -48,24 +51,19 @@
       p.warning { font-size: 11px; color: #a15c00; margin: 0 0 8px; }
       .url-row { display: flex; gap: 6px; }
       .url-row input { flex: 1; }
-      #reset-url, #save-url {
+      #reset-url {
         margin-top: 0;
         padding: 7px 10px;
         font-size: 12px;
+        background: #eee;
+        color: #333;
       }
-      #save-url { margin-top: 10px; }
-      #reset-url { background: #eee; color: #333; }
-      #url-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
-      #url-status.error { color: #c0392b; }
-      #url-status.ok { color: #1e7d32; }
     </style>
   </head>
   <body>
     <h1>Haven Proxy settings</h1>
     <p class="hint">Stored locally in ~/.haven-proxy/config.json — shared with the haven-proxy CLI.</p>
     <input id="key" type="password" placeholder="hvn1_…" autofocus />
-    <button id="save">Save &amp; verify</button>
-    <p id="status"></p>
     <details id="advanced">
       <summary>Advanced settings</summary>
       <div class="body">
@@ -74,31 +72,41 @@
           <input id="base-url" type="text" placeholder="https://…" spellcheck="false" />
           <button id="reset-url" type="button">Reset to default</button>
         </div>
-        <button id="save-url" type="button">Save</button>
-        <p id="url-status"></p>
       </div>
     </details>
+    <button id="save">Save &amp; verify</button>
+    <button id="cancel" type="button" hidden>Cancel</button>
+    <p id="status"></p>
     <script>
       const keyInput = document.getElementById("key");
       const baseUrlInput = document.getElementById("base-url");
       const resetUrlButton = document.getElementById("reset-url");
-      const saveUrlButton = document.getElementById("save-url");
       const button = document.getElementById("save");
+      const cancelButton = document.getElementById("cancel");
       const status = document.getElementById("status");
-      const urlStatus = document.getElementById("url-status");
       let defaultBaseURL = "";
+      // Sticky across a re-submit: once the key replacement is confirmed, a later
+      // "Save anyway" for an invalid key must not ask about it again.
+      let confirmReplace = false;
 
       window.haven.getSettings().then((settings) => {
         baseUrlInput.value = settings.baseURL;
         defaultBaseURL = settings.defaultBaseURL;
+        if (settings.redactedKey) {
+          keyInput.placeholder = `${settings.redactedKey} — leave blank to keep`;
+        }
       });
 
       resetUrlButton.addEventListener("click", () => {
         baseUrlInput.value = defaultBaseURL;
       });
 
-      // Both save flows return the same { ok, error, warning, balance, emptyBalance }
-      // shape from main — this renders it the same way in either status line.
+      function monospace(text) {
+        const el = document.createElement("code");
+        el.textContent = text;
+        return el;
+      }
+
       function describeResult(result) {
         if (result.warning) return result.warning;
         if (result.balance !== null) return `Balance $${result.balance.toFixed(2)}. Proxy is running.`;
@@ -106,15 +114,44 @@
         return "Saved. Proxy is running.";
       }
 
-      async function save() {
+      // Idle, or waiting on a deliberate second click. `next` is what that click does.
+      function setPrompt({ label, next } = {}) {
+        button.textContent = label || "Save & verify";
+        button.disabled = false;
+        cancelButton.hidden = !next;
+        button.onclick = next || (() => submit());
+      }
+
+      async function submit(opts = {}) {
         button.disabled = true;
+        cancelButton.hidden = true;
         status.className = "";
         status.textContent = "Verifying…";
-        const result = await window.haven.saveKey({ apiKey: keyInput.value });
+        const result = await window.haven.saveSettings({
+          apiKey: keyInput.value,
+          baseURL: baseUrlInput.value,
+          confirmReplace,
+          force: Boolean(opts.force),
+        });
+
+        if (result.confirm) {
+          status.className = "confirm";
+          // Nodes, not innerHTML: the redacted keys are user input and this page
+          // runs with 'unsafe-inline' script-src plus the IPC bridge.
+          status.replaceChildren(
+            document.createTextNode("Replace the saved key "),
+            monospace(result.confirm.from),
+            document.createTextNode(" with "),
+            monospace(result.confirm.to),
+            document.createTextNode("?"),
+          );
+          setPrompt({ label: "Replace", next: () => { confirmReplace = true; return submit(opts); } });
+          return;
+        }
         if (!result.ok) {
           status.className = "error";
           status.textContent = result.error;
-          button.disabled = false;
+          setPrompt(result.canForce ? { label: "Save anyway", next: () => submit({ force: true }) } : {});
           return;
         }
         status.className = "ok";
@@ -122,29 +159,18 @@
         setTimeout(() => window.haven.closeWindow(), 1800);
       }
 
-      async function saveBaseUrl() {
-        saveUrlButton.disabled = true;
-        urlStatus.className = "";
-        urlStatus.textContent = "Saving…";
-        const result = await window.haven.saveBaseURL({ baseURL: baseUrlInput.value });
-        saveUrlButton.disabled = false;
-        if (!result.ok) {
-          urlStatus.className = "error";
-          urlStatus.textContent = result.error;
-          return;
-        }
-        urlStatus.className = "ok";
-        urlStatus.textContent = describeResult(result);
-      }
-
-      button.addEventListener("click", save);
-      keyInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !button.disabled) save();
+      cancelButton.addEventListener("click", () => {
+        confirmReplace = false;
+        status.className = "";
+        status.textContent = "";
+        setPrompt();
       });
-      saveUrlButton.addEventListener("click", saveBaseUrl);
-      baseUrlInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !saveUrlButton.disabled) saveBaseUrl();
-      });
+      const submitOnEnter = (e) => {
+        if (e.key === "Enter" && !button.disabled) button.onclick();
+      };
+      keyInput.addEventListener("keydown", submitOnEnter);
+      baseUrlInput.addEventListener("keydown", submitOnEnter);
+      setPrompt();
     </script>
   </body>
 </html>
