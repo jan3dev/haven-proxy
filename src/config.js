@@ -76,6 +76,29 @@ export function redactKey(key) {
   return key.slice(0, 8) + "…" + key.slice(-4);
 }
 
+// Normalize a user-typed backend origin. Blank falls back to the default.
+// HTTPS-only, per the trust boundary — the relay must never talk plaintext.
+// Returns { baseURL } or { error } so both front-ends report it the same way.
+export function normalizeBaseURL(input) {
+  const trimmed = String(input ?? "").trim();
+  if (!trimmed) return { baseURL: DEFAULT_BASE_URL };
+  const stripped = trimmed.replace(/\/+$/, "");
+  let url;
+  try {
+    url = new URL(stripped);
+  } catch {
+    return { error: `"${trimmed}" is not a valid URL — expected https://host` };
+  }
+  if (url.protocol !== "https:") {
+    return { error: "Backend URL must use https:// — the relay never talks plaintext" };
+  }
+  // Callers append /api/v1/haven themselves, so a pasted full API URL would double up.
+  if (url.pathname !== "/" || url.search || url.hash) {
+    return { error: `Backend URL must be an origin only — try ${url.origin}` };
+  }
+  return { baseURL: url.origin };
+}
+
 // --- OpenCode provider registration ----------------------------------------
 
 const OPENCODE_SCHEMA = "https://opencode.ai/config.json";
