@@ -4,7 +4,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("haven", {
   getSettings: () => ipcRenderer.invoke("haven:get-settings"),
-  saveKey: (payload) => ipcRenderer.invoke("haven:save-key", payload),
-  saveBaseURL: (payload) => ipcRenderer.invoke("haven:save-base-url", payload),
+  saveSettings: (payload) => ipcRenderer.invoke("haven:save-settings", payload),
   closeWindow: () => ipcRenderer.invoke("haven:close-key-window"),
 });

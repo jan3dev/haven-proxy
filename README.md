@@ -77,6 +77,9 @@ proxy in-process and puts an icon in the system tray — no terminal, no console
 - **Tray menu**: status + balance, Start/Stop proxy, **Launch at login** toggle, **Register with
   OpenCode** toggle (persisted — unchecking keeps the Haven entries out across restarts), Open
   logs, Settings, Quit.
+- **Settings** saves the key and the backend origin as one unit, and verifies the key against the
+  backend shown in the window. Leave the key box blank to keep the stored one. Replacing a stored
+  key asks first, and a key the backend rejects can still be saved with a second, deliberate click.
 - **OpenCode doesn't need the proxy running**: `haven/…` models relay in-process, so they work
   with the app closed. The tray proxy exists for baseURL-only tools (`haven-local/…`, Cline,
   Aider, Continue, …).
@@ -201,6 +204,18 @@ haven-proxy login
 # or pass it directly for scripting/CI:
 haven-proxy login --api-key hvn1_…
 ```
+
+To point at a different backend, pass `--base-url` (https only). On its own it reuses the key you
+already saved, so you can move between backends without retyping it:
+
+```bash
+haven-proxy login --base-url https://ankara.aquabtc.com
+haven-proxy login --api-key hvn1_… --base-url https://ankara.aquabtc.com   # change both at once
+```
+
+The key is always verified against the backend you pass, and `login` refuses to save a key the
+backend rejects. Add `--force` to save it anyway — useful when a key is provisioned but not yet
+active.
 
 **Run (foreground):**
 

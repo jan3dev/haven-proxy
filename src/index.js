@@ -16,7 +16,7 @@ import { parseArgs } from "node:util";
 // equivalent, so without this the binary silently starts with no key.
 try { process.loadEnvFile(); } catch (e) { if (e?.code !== "ENOENT") throw e; }
 import { DEFAULT_TIMEOUT_MS, validateKey, fetchPricing } from "./relay.js";
-import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
+import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, normalizeBaseURL, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
 import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
 import { createProxyServer, DEFAULT_PORT } from "./server.js";
 import { VERSION } from "./version.js";
@@ -56,7 +56,10 @@ Options (serve / start):
       --allow-remote              Allow non-loopback binding    [env: HAVEN_ALLOW_REMOTE=1]
 
 Options (login):
-  -k, --api-key      <key>        API key to save (prompts if omitted)
+  -k, --api-key      <key>        API key to save (prompts if omitted; with --base-url
+                                  alone, the already-saved key is reused)
+  -u, --base-url     <url>        Ankara backend origin to save (https only)            (default: ${DEFAULT_BASE_URL})
+      --force                     Save even if the backend rejects the key (401)
   -p, --port         <n>          Port the local proxy will use, for the "haven-local"
                                   OpenCode provider entry                              (default: ${DEFAULT_PORT})
 
@@ -90,6 +93,7 @@ if (subcommand === "login") {
     options: {
       "api-key":  { type: "string", short: "k" },
       "base-url": { type: "string", short: "u" },
+      "force":    { type: "boolean" },
       "port":     { type: "string", short: "p" },
       "help":     { type: "boolean", short: "h" },
     },
@@ -97,22 +101,39 @@ if (subcommand === "login") {
   });
   if (values.help) { console.log(HELP); }
   else {
+    const { cfg } = loadConfig();
+    const typedURL = values["base-url"];
+    const url = normalizeBaseURL(typedURL || cfg.baseURL);
+    if (url.error && typedURL) {
+      console.error(`[haven-proxy] ${url.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    // A saved URL that no longer validates must not trap the user out of logging
+    // in — fall back to the default instead, which is what they'd want anyway.
+    if (url.error) {
+      console.warn(`[haven-proxy] Saved backend URL is unusable (${url.error}) — using ${DEFAULT_BASE_URL}.`);
+    }
+    const baseURL = url.baseURL || DEFAULT_BASE_URL;
     let apiKey = values["api-key"] || process.env.HAVEN_API_KEY || "";
+    // `login --base-url X` alone re-points the backend using the already-saved key.
+    if (!apiKey && typedURL && cfg.apiKey) apiKey = cfg.apiKey;
     if (!apiKey) apiKey = await promptApiKey();
     if (!apiKey) {
       console.error("[haven-proxy] API key is required.");
       process.exitCode = 1;
     } else {
-      const { cfg } = loadConfig();
-      const baseURL = (values["base-url"] || cfg.baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "");
       const havenApiRoot = `${baseURL}/api/v1/haven`;
       process.stdout.write("[haven-proxy] Verifying key… ");
       const result = await validateKey(havenApiRoot, apiKey);
-      if (result.reason === "invalid_key") {
-        console.error("\n[haven-proxy] Key is invalid — check it and try again.");
+      if (result.reason === "invalid_key" && !values.force) {
+        console.error(`\n[haven-proxy] Key is invalid against ${baseURL} — check it and try again`);
+        console.error("[haven-proxy] (use --force to save it anyway)");
         process.exitCode = 1;
       } else {
-        if (result.reason === "unreachable") {
+        if (result.reason === "invalid_key") {
+          console.warn(`\n[haven-proxy] Key is invalid against ${baseURL} — saving anyway (--force).`);
+        } else if (result.reason === "unreachable") {
           console.warn("\n[haven-proxy] Could not reach Haven to verify the key — saving anyway.");
         } else if (result.ok) {
           process.stdout.write(`balance $${result.balance.toFixed(2)} ✓\n`);

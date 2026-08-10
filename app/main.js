@@ -23,6 +23,8 @@ import {
   opencodeProviderStatus,
   opencodeShadowingConfigs,
   pruneLegacyOpencodeConfig,
+  redactKey,
+  normalizeBaseURL,
   DEFAULT_BASE_URL,
 } from "haven-proxy/config";
 import { validateKey, fetchPricing } from "haven-proxy/relay";
@@ -213,7 +215,7 @@ function buildMenu() {
   const { cfg } = loadConfig();
   return Menu.buildFromTemplate([
     { label: statusLine(), enabled: false },
-    ...(cfg.apiKey ? [{ label: `Key: …${cfg.apiKey.slice(-6)}`, enabled: false }] : []),
+    ...(cfg.apiKey ? [{ label: `Key: ${redactKey(cfg.apiKey)}`, enabled: false }] : []),
     { label: cfg.apiKey ? balance.text : "No API key — enter one below", enabled: false },
     { type: "separator" },
     {
@@ -381,7 +383,7 @@ function openKeyWindow() {
   }
   keyWindow = new BrowserWindow({
     width: 440,
-    height: 340,
+    height: 400,
     resizable: false,
     autoHideMenuBar: true,
     title: "Haven Proxy — Settings",
@@ -395,16 +397,23 @@ function openKeyWindow() {
 
 ipcMain.handle("haven:get-settings", () => {
   const { cfg } = loadConfig();
-  return { baseURL: cfg.baseURL || DEFAULT_BASE_URL, defaultBaseURL: DEFAULT_BASE_URL };
+  return {
+    baseURL: cfg.baseURL || DEFAULT_BASE_URL,
+    defaultBaseURL: DEFAULT_BASE_URL,
+    // Shown as the key field's placeholder, so it's clear one is already stored.
+    redactedKey: cfg.apiKey ? redactKey(cfg.apiKey) : null,
+  };
 });
 
-// Both settings flows do the same thing once the new values validate: persist them
-// (even when Haven was unreachable, like the CLI's login), re-register with
-// OpenCode best-effort, and restart the relay so it picks the change up.
+// Once the new values are accepted: persist them (even when Haven was unreachable
+// or rejected the key, like the CLI's login), re-register with OpenCode
+// best-effort, and restart the relay so it picks the change up.
 async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted = false } = {}) {
   saveConfig({ ...cfg, apiKey, baseURL });
   let warning =
-    result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway." : null;
+    result.reason === "unreachable" ? "Could not reach Haven to verify — saved anyway."
+    : result.reason === "invalid_key" ? "Saved, but this key is invalid against the backend — requests will fail."
+    : null;
   try {
     // The backend may have changed, so fetch that backend's prices.
     if (cfg.registerOpencode !== false) {
@@ -427,23 +436,25 @@ async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted
   };
 }
 
-ipcMain.handle("haven:save-key", async (_event, { apiKey: rawKey } = {}) => {
-  const apiKey = String(rawKey || "").trim();
-  if (!apiKey) return { ok: false, error: "API key is required." };
+// Key and backend save as one unit, and the typed key is verified against the
+// typed backend. Verifying either half against the stored other half made "new
+// key + new backend" impossible: it only worked backend-first, which is exactly
+// what a stored key the new backend rejects blocks. The two gates below answer
+// with a flag the renderer echoes back, so all wording and redaction stay here.
+ipcMain.handle("haven:save-settings", async (_event, payload = {}) => {
+  const { confirmReplace = false, force = false } = payload;
+  const apiKey = String(payload.apiKey ?? "").trim();
   const { cfg } = loadConfig();
-  const isFirstSetup = !cfg.apiKey;
-  const baseURL = (cfg.baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  const result = await validateKey(`${baseURL}/api/v1/haven`, apiKey);
-  if (result.reason === "invalid_key") {
-    return { ok: false, error: "Key is invalid — check it and try again." };
-  }
-  return applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted: isFirstSetup });
-});
 
-ipcMain.handle("haven:save-base-url", async (_event, { baseURL: rawBaseURL } = {}) => {
-  const baseURL = String(rawBaseURL || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
-  const { cfg } = loadConfig();
-  if (!cfg.apiKey) {
+  const url = normalizeBaseURL(payload.baseURL);
+  if (url.error) return { ok: false, error: url.error };
+  const { baseURL } = url;
+
+  // An empty key field means "keep the stored one" — the field starts empty on
+  // every open, so the user can change the backend alone without retyping it.
+  const effectiveKey = apiKey || cfg.apiKey;
+  if (!effectiveKey) {
+    if (baseURL === cfg.baseURL) return { ok: false, error: "API key is required." };
     // Nothing to validate against yet — just persist it for when a key is entered.
     // Deliberately no OpenCode entry either: without a key its models would fail.
     saveConfig({ ...cfg, baseURL });
@@ -454,11 +465,18 @@ ipcMain.handle("haven:save-base-url", async (_event, { baseURL: rawBaseURL } = {
       emptyBalance: false,
     };
   }
-  const result = await validateKey(`${baseURL}/api/v1/haven`, cfg.apiKey);
-  if (result.reason === "invalid_key") {
-    return { ok: false, error: "The saved API key is invalid against this backend." };
+
+  // Discarding a working key is not undoable — name both before doing it.
+  if (apiKey && cfg.apiKey && apiKey !== cfg.apiKey && !confirmReplace) {
+    return { ok: false, confirm: { from: redactKey(cfg.apiKey), to: redactKey(apiKey) } };
   }
-  return applySettings(cfg, { apiKey: cfg.apiKey, baseURL }, result);
+
+  const result = await validateKey(`${baseURL}/api/v1/haven`, effectiveKey);
+  // A 401 blocks once, then yields: a rejected key must never be a dead end.
+  if (result.reason === "invalid_key" && !force) {
+    return { ok: false, error: `Key is invalid against ${baseURL}.`, canForce: true };
+  }
+  return applySettings(cfg, { apiKey: effectiveKey, baseURL }, result, { notifyIfStarted: !cfg.apiKey });
 });
 
 ipcMain.handle("haven:close-key-window", () => {
