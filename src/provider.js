@@ -24,6 +24,7 @@
 //   }
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createSecureRelay, sseLinesFor } from "./relay.js";
+import { resolveCatalog } from "./catalog.js";
 import { loadConfig } from "./config.js";
 
 function decodeBody(body) {
@@ -87,6 +88,13 @@ export function createHaven(options = {}) {
 
   const havenApiRoot = baseURL.replace(/\/+$/, "");
   const relay = createSecureRelay({ havenApiRoot, apiKey, timeoutMs });
+
+  // Learn which models the backend still serves, in the background: OpenCode builds
+  // the provider synchronously at startup, and this isn't worth blocking that for.
+  // Until it lands — or if it never does — relay() just doesn't pre-check.
+  resolveCatalog(havenApiRoot)
+    .then(({ servableIds }) => relay.setServableModels(servableIds))
+    .catch(() => {});
 
   // Custom fetch: the AI SDK calls this with a full URL and a JSON body string.
   // We only handle the chat/completions hop; anything else falls back untouched.

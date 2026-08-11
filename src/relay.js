@@ -192,6 +192,11 @@ export function classifyHavenError(status, payload = {}) {
   // rate limit, not a proxy fault — surface it as such so it's actionable.
   if (payload.error_code === "HAVEN_UPSTREAM_ERROR") {
     const upstreamStatus = payload.details?.status;
+    // The enclave's own words, forwarded secret-free by the backend. It's the only
+    // part of an upstream failure that says *why* (a retired model, a bad param), so
+    // it outranks the envelope's fixed "the inference service returned an error".
+    // Older backends only send it for 4xx — absent, we fall back as before.
+    const upstreamMessage = payload.details?.upstream_message;
     if (upstreamStatus === 422) {
       // Pre-passthrough Haven deployments wrap the EHBP signal instead of
       // relaying it; reaching here means the relay's own reset-and-retry (see
@@ -208,10 +213,10 @@ export function classifyHavenError(status, payload = {}) {
     // Bad params / unknown model: the enclave's own message is the actionable
     // part (Haven forwards it, secret-free, as details.upstream_message). Keep
     // the enclave's 4xx status so clients don't retry a deterministic failure.
-    if ((upstreamStatus === 400 || upstreamStatus === 404) && payload.details?.upstream_message) {
+    if ((upstreamStatus === 400 || upstreamStatus === 404) && upstreamMessage) {
       return {
         status: upstreamStatus,
-        message: payload.details.upstream_message,
+        message: upstreamMessage,
         type: "invalid_request_error",
         code: "upstream_rejected",
       };
@@ -220,14 +225,18 @@ export function classifyHavenError(status, payload = {}) {
       return {
         status: 429,
         message:
-          "Haven inference is rate-limited upstream (429). Wait a moment and retry, or try another model.",
+          `Haven inference is rate-limited upstream (429).${upstreamMessage ? ` ${upstreamMessage}` : ""} ` +
+          "Wait a moment and retry, or try another model.",
         type: "rate_limit_error",
         code: "upstream_rate_limited",
       };
     }
+    // Keep the enclave's status alongside its message: a 5xx stays retryable, and the
+    // number is what makes a report traceable to a log line.
+    const upstreamLabel = `Haven inference upstream error (HTTP ${upstreamStatus ?? status})`;
     return {
       status: 502,
-      message: detail || `Haven inference upstream error (HTTP ${upstreamStatus ?? status}).`,
+      message: upstreamMessage ? `${upstreamLabel}: ${upstreamMessage}` : detail || `${upstreamLabel}.`,
       type: "api_error",
       code: payload.error_code,
     };
@@ -311,12 +320,13 @@ export async function validateKey(havenApiRoot, apiKey) {
   }
 }
 
-// Probe the public pricing endpoint (no API key — it's world-readable) and
-// return per-model prices in USD per 1M tokens. The backend serializes decimals
-// as strings, so parse defensively and drop anything malformed. Returns
-//   { ok: true,  costs: { [modelId]: { input, output } } }
+// Probe the public pricing endpoint (no API key — it's world-readable). It is
+// also the model catalog: the backend lists only what it can actually serve, so
+// an id missing here is one that no longer runs. Decimals arrive as strings, so
+// parse defensively and drop anything malformed. Returns
+//   { ok: true,  models: [{ id, name, cost: { input, output } }] }
 //   { ok: false, reason: "unreachable" | "bad_response" }
-export async function fetchPricing(havenApiRoot) {
+export async function fetchCatalog(havenApiRoot) {
   let entries;
   try {
     const res = await globalThis.fetch(`${havenApiRoot}/pricing/`, {
@@ -331,16 +341,22 @@ export async function fetchPricing(havenApiRoot) {
   // Number("") is 0, so blank strings must be rejected before conversion.
   const price = (v) =>
     (typeof v === "string" && v.trim() !== "") || typeof v === "number" ? Number(v) : NaN;
-  const costs = {};
+  const models = [];
   for (const entry of entries) {
     if (typeof entry?.id !== "string" || !entry.id) continue;
     const input = price(entry.input_cost);
     const output = price(entry.output_cost);
     if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) continue;
-    costs[entry.id] = { input, output };
+    models.push({
+      id: entry.id,
+      name: typeof entry.name === "string" ? entry.name : "",
+      cost: { input, output },
+    });
   }
-  if (!Object.keys(costs).length) return { ok: false, reason: "bad_response" };
-  return { ok: true, costs };
+  // An empty catalog reads the same as a shape we failed to parse, and neither is
+  // something to act on — a client that believed it would reject every model.
+  if (!models.length) return { ok: false, reason: "bad_response" };
+  return { ok: true, models };
 }
 
 // Kept for the internal relay fallback path (balance probe on encrypted-relay failure).
@@ -431,6 +447,29 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
   // which the SDK reads as a generic error, so a stale key would otherwise wedge
   // this process until restart. Haven doesn't say which kind of 422 it was, so a
   // genuine unprocessable-request 422 costs one harmless extra attempt.
+  // Ids the backend says it serves, or null while we don't know. Only this side of
+  // the relay can check a model at all: the backend never sees one, because the id
+  // is inside the body we encrypt to the enclave.
+  let servableIds = null;
+  const setServableModels = (ids) => {
+    servableIds = ids ? new Set(ids) : null;
+  };
+
+  // A retired model is a deterministic failure. Sending it anyway costs a round
+  // trip, spends balance, and comes back as an opaque upstream 5xx — so answer it
+  // here. Silent when the catalog is unknown: refusing on a guess would be worse
+  // than the failure it prevents.
+  const rejectUnknownModel = (model) => {
+    if (!servableIds || typeof model !== "string" || servableIds.has(model)) return null;
+    const available = [...servableIds].sort().join(", ");
+    return {
+      status: 404,
+      message: `Model "${model}" is not offered by Haven. Available: ${available}.`,
+      type: "invalid_request_error",
+      code: "model_not_found",
+    };
+  };
+
   const isWrappedStaleKeyError = (outcome) =>
     outcome?.captured?.payload?.error_code === "HAVEN_UPSTREAM_ERROR" &&
     outcome.captured.payload.details?.status === 422;
@@ -442,6 +481,9 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
     // If the client already went away (e.g. it aborted during body read),
     // don't spend balance on a completion nobody will read.
     if (signal?.aborted) return abortedResult();
+
+    const unknownModel = rejectUnknownModel(body.model);
+    if (unknownModel) return { ok: false, error: unknownModel };
 
     // Deadline for this request. Not AbortSignal.timeout: its timer is unref'd,
     // so with nothing else keeping the event loop alive the process would exit
@@ -591,6 +633,7 @@ export function createSecureRelay({ havenApiRoot, apiKey, timeoutMs = DEFAULT_TI
   return {
     client,
     relay,
+    setServableModels,
     ready: () => client.ready(),
     validate: () => validateKey(havenApiRoot, apiKey),
   };

@@ -154,7 +154,6 @@ other than 3301.
       "models": {
         "gpt-oss-120b": { "name": "GPT-OSS 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.18, "output": 0.72 } },
         "gpt-oss-safeguard-120b": { "name": "GPT-OSS Safeguard 120B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.18, "output": 0.72 } },
-        "kimi-k2-6": { "name": "Kimi K2.6 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.80, "output": 6.30 } },
         "glm-5-2": { "name": "GLM-5.2 (Haven)", "limit": { "context": 200000, "output": 65536 }, "cost": { "input": 1.80, "output": 6.30 } },
         "gemma4-31b": { "name": "Gemma 4 31B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 0.48, "output": 1.20 } },
         "llama3-3-70b": { "name": "Llama 3.3 70B (Haven)", "limit": { "context": 131072, "output": 32768 }, "cost": { "input": 2.10, "output": 3.30 } }
@@ -179,11 +178,16 @@ Restart OpenCode after editing, then pick the `haven/gpt-oss-120b` model.
 > it overrides the global entry — OpenCode merges `config.json` → `opencode.json` → `opencode.jsonc`,
 > then project configs found walking up from the cwd. `haven-proxy login` warns when it spots one.
 
+> **The model list above is a snapshot, not the source of truth.** Models get retired, and a
+> request for one that no longer exists fails. The live list is whatever
+> `GET https://ankara.aquabtc.com/api/v1/haven/pricing/` returns — the backend publishes only
+> what it can actually serve. `haven-proxy login` (and the tray app on startup) fetches it and
+> writes the current models *and* prices into your config, so re-run `login` (or restart the tray
+> app) to pick up a retirement or a price change.
+
 > The `limit` values are best-effort defaults — adjust them to each model's real context/output
 > window if you hit truncation. `cost` is USD per 1M tokens and drives OpenCode's session cost
-> display. The values above are fallback defaults: `haven-proxy login` (and the tray app on
-> startup) fetches the current prices from the backend's public pricing endpoint and writes those
-> instead, so re-run `login` (or restart the tray app) to pick up a price change.
+> display.
 
 
 
@@ -288,7 +292,7 @@ file (`cp .env.example .env`, then edit):
 | `HAVEN_BASE_URL`   | Origin of the Ankara backend serving Haven. Defaults to `https://ankara.aquabtc.com`. Override for staging/local dev. **HTTPS required** — the SDK refuses to fetch the attestation bundle over plaintext.                                                                       |
 | `HAVEN_API_KEY`    | Your `hvn1_…` key. Lives **only** here, never in `opencode.json`.                                                                                                                                                                                                                |
 | `HOST` / `PORT`    | Where the proxy listens. Defaults `127.0.0.1:3301`.                                                                                                                                                                                                                              |
-| `HAVEN_MODELS`     | Comma-separated model ids exposed at `/v1/models`. Available on Haven: `gpt-oss-120b`, `kimi-k2-6`, `glm-5-2`, `gemma4-31b`, `llama3-3-70b`, `qwen3-vl-30b`. Must match an `id` the enclave actually serves — note the ids use `-`, not `.` (e.g. `kimi-k2-6`, not `kimi-k2.6`). |
+| `HAVEN_MODELS`     | Comma-separated model ids exposed at `/v1/models`. Overrides the live list from `/pricing/` — set it only to try an id before the backend publishes it, since the proxy then also stops rejecting unknown ids. Ids use `-`, not `.` (e.g. `kimi-k3`, not `kimi-k3.0`). |
 | `HAVEN_TIMEOUT_MS` | Per-request upstream deadline in ms (default `300000`). A hung enclave call is cut off with HTTP 504 instead of hanging forever. The in-process provider takes the same value as `options.timeoutMs`.                                                                            |
 
 ## Standalone executable (no Node required)
