@@ -11,7 +11,7 @@ import {
   classifyHavenError,
   sseLinesFor,
   createSecureRelay,
-  fetchPricing,
+  fetchCatalog,
   INSUFFICIENT_BALANCE_MSG,
 } from "../src/relay.js";
 
@@ -61,6 +61,34 @@ describe("classifyHavenError", () => {
     const err = classifyHavenError(502, envelope(404));
     assert.equal(err.status, 502);
     assert.equal(err.code, "HAVEN_UPSTREAM_ERROR");
+  });
+
+  test("wrapped upstream 5xx surfaces the enclave's message alongside its status", () => {
+    // The deprecated-model case: the enclave explains itself in a 503 body, and that
+    // reason is the whole difference between "retry later" and "stop using this model".
+    const err = classifyHavenError(
+      502,
+      envelope(503, { upstream_message: "model kimi-k2-6 has been deprecated" }),
+    );
+    assert.equal(err.status, 502); // 5xx stays retryable — only the message improves
+    assert.equal(err.code, "HAVEN_UPSTREAM_ERROR");
+    assert.match(err.message, /kimi-k2-6 has been deprecated/);
+    assert.match(err.message, /HTTP 503/);
+  });
+
+  test("wrapped 5xx without upstream_message keeps the old generic text (older backend)", () => {
+    const err = classifyHavenError(502, envelope(503));
+    assert.equal(err.status, 502);
+    assert.equal(err.message, "External API error");
+  });
+
+  test("wrapped 429 keeps its retry advice and adds the enclave's message when present", () => {
+    const bare = classifyHavenError(502, envelope(429));
+    assert.match(bare.message, /Wait a moment and retry/);
+    const detailed = classifyHavenError(502, envelope(429, { upstream_message: "quota exhausted" }));
+    assert.equal(detailed.status, 429);
+    assert.match(detailed.message, /quota exhausted/);
+    assert.match(detailed.message, /Wait a moment and retry/);
   });
 
   test("Haven's own statuses keep their meanings", () => {
@@ -114,7 +142,7 @@ describe("sseLinesFor", () => {
   });
 });
 
-describe("fetchPricing", () => {
+describe("fetchCatalog", () => {
   const ROOT = "https://ankara.example.com/api/v1/haven";
   const realFetch = globalThis.fetch;
   const withFetch = async (impl, run) => {
@@ -128,38 +156,38 @@ describe("fetchPricing", () => {
   const jsonResponse = (body, status = 200) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-  test("parses string decimals into numbers, keyed by model id", async () => {
+  test("parses string decimals into numbers, keeping id and name", async () => {
     let url;
     const result = await withFetch(
       async (input) => {
         url = String(input);
         return jsonResponse([
-          { id: "kimi-k2-6", name: "Kimi K2.6", input_cost: "1.250000", output_cost: "5.250000" },
+          { id: "kimi-k3", name: "Kimi K3", input_cost: "1.250000", output_cost: "5.250000" },
           { id: "gpt-oss-120b", name: "GPT-OSS 120B", input_cost: "0.900000", output_cost: "3.600000" },
         ]);
       },
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
     assert.equal(url, `${ROOT}/pricing/`);
     assert.deepEqual(result, {
       ok: true,
-      costs: {
-        "kimi-k2-6": { input: 1.25, output: 5.25 },
-        "gpt-oss-120b": { input: 0.9, output: 3.6 },
-      },
+      models: [
+        { id: "kimi-k3", name: "Kimi K3", cost: { input: 1.25, output: 5.25 } },
+        { id: "gpt-oss-120b", name: "GPT-OSS 120B", cost: { input: 0.9, output: 3.6 } },
+      ],
     });
   });
 
   test("network error and non-2xx → unreachable", async () => {
     const down = await withFetch(
       async () => { throw new TypeError("fetch failed"); },
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
     assert.deepEqual(down, { ok: false, reason: "unreachable" });
 
     const err500 = await withFetch(
       async () => jsonResponse({ detail: "boom" }, 500),
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
     assert.deepEqual(err500, { ok: false, reason: "unreachable" });
   });
@@ -175,21 +203,24 @@ describe("fetchPricing", () => {
           { id: "negative", input_cost: "-1", output_cost: "1" },
           "not even an object",
         ]),
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
-    assert.deepEqual(result, { ok: true, costs: { "glm-5-2": { input: 2, output: 7 } } });
+    assert.deepEqual(result, {
+      ok: true,
+      models: [{ id: "glm-5-2", name: "", cost: { input: 2, output: 7 } }],
+    });
   });
 
   test("non-array body or nothing usable → bad_response", async () => {
     const notArray = await withFetch(
       async () => jsonResponse({ prices: [] }),
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
     assert.deepEqual(notArray, { ok: false, reason: "bad_response" });
 
     const allInvalid = await withFetch(
       async () => jsonResponse([{ id: "x", input_cost: "NaN", output_cost: "1" }]),
-      () => fetchPricing(ROOT),
+      () => fetchCatalog(ROOT),
     );
     assert.deepEqual(allInvalid, { ok: false, reason: "bad_response" });
   });
@@ -308,6 +339,31 @@ describe("relay integration (fake Ankara + stubbed SecureClient)", () => {
     gate = new Promise((resolve) => {
       openGate = resolve;
     });
+  });
+
+  test("a model the backend no longer serves is rejected without a relay attempt", async () => {
+    const r = makeRelay();
+    r.setServableModels(["gpt-oss-120b", "glm-5-2"]);
+
+    const out = await r.relay({ model: "kimi-k2-6", messages: [] });
+
+    assert.equal(out.ok, false);
+    assert.equal(out.error.status, 404);
+    assert.equal(out.error.code, "model_not_found");
+    assert.match(out.error.message, /kimi-k2-6/);
+    assert.match(out.error.message, /glm-5-2, gpt-oss-120b/); // sorted, so it reads as a menu
+    assert.equal(hits, 0, "a deterministic failure must not cost a round trip");
+  });
+
+  test("a servable model — and an unknown catalog — still go upstream", async () => {
+    const known = makeRelay();
+    known.setServableModels(["gpt-oss-120b"]);
+    assert.equal((await known.relay({ model: "gpt-oss-120b", messages: [] })).ok, true);
+
+    // Never told what's servable: guessing would block models that do work.
+    const blind = makeRelay();
+    assert.equal((await blind.relay({ model: "who-knows", messages: [] })).ok, true);
+    assert.equal(hits, 2);
   });
 
   test("wrapped stale-key 422 → reset, retry once, succeed", async () => {

@@ -8,6 +8,7 @@
     ".": "./src/provider.js",
     "./proxy": "./src/index.js",
     "./relay": "./src/relay.js",
+    "./catalog": "./src/catalog.js",
     "./server": "./src/server.js",
     "./config": "./src/config.js",
     "./daemon": "./src/daemon.js"

@@ -11,6 +11,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS } from "./relay.js";
 import { DEFAULT_BASE_URL, DEFAULT_PORT, MODEL_IDS } from "./defaults.js";
+import { resolveCatalog, CATALOG_TTL_MS } from "./catalog.js";
 
 export const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
 export { DEFAULT_PORT };
@@ -33,13 +34,22 @@ const consoleLog = { info: console.log, warn: console.warn, error: console.error
 export function createProxyServer({
   apiKey,
   baseURL = DEFAULT_BASE_URL,
-  models = DEFAULT_MODELS,
+  models,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   log = consoleLog, // { info, warn, error }
 } = {}) {
   if (!apiKey) throw new Error("createProxyServer: apiKey is required");
   const havenApiRoot = `${baseURL.replace(/\/+$/, "")}/api/v1/haven`;
   const relay = createSecureRelay({ havenApiRoot, apiKey, timeoutMs });
+
+  // An explicit --models list pins what we advertise and what we accept: its whole
+  // purpose is trying an id the backend hasn't published yet. Otherwise warmup
+  // replaces this with the live catalog.
+  const pinned = models?.length ? [...models] : null;
+  let servedModels = pinned ?? DEFAULT_MODELS;
+  let catalogAt = 0; // when servedModels last came from resolveCatalog
+  let refreshing = null; // in-flight background refresh, so requests don't stack them
+  if (pinned) relay.setServableModels(pinned);
 
   function sendJson(res, status, obj) {
     const body = JSON.stringify(obj);
@@ -72,6 +82,7 @@ export function createProxyServer({
   }
 
   async function handleChatCompletions(req, res) {
+    refreshCatalogIfStale(); // fire-and-forget; this request uses what we already have
     // Cancel the upstream relay if the client goes away (OpenCode aborting a
     // generation, dropped connection). Without this the request would keep
     // running and spending balance on output nobody reads. `close` also fires
@@ -126,9 +137,10 @@ export function createProxyServer({
   }
 
   function handleModels(res) {
+    refreshCatalogIfStale();
     sendJson(res, 200, {
       object: "list",
-      data: models.map((id) => ({ id, object: "model", created: 0, owned_by: "haven" })),
+      data: servedModels.map((id) => ({ id, object: "model", created: 0, owned_by: "haven" })),
     });
   }
 
@@ -158,10 +170,47 @@ export function createProxyServer({
     });
   });
 
+  async function refreshCatalog({ quiet = false } = {}) {
+    if (pinned) {
+      if (!quiet) log.info(`[haven-proxy] models (pinned): ${servedModels.join(", ")}`);
+      return;
+    }
+    const { models: catalog, source, servableIds } = await resolveCatalog(havenApiRoot);
+    servedModels = catalog.map((m) => m.id);
+    relay.setServableModels(servableIds);
+    catalogAt = Date.now();
+    if (quiet) return; // a background top-up shouldn't narrate itself on every request
+    log.info(`[haven-proxy] models: ${servedModels.join(", ")}`);
+    if (source !== "backend") {
+      log.warn(
+        `[haven-proxy] Could not fetch the model list — using the ${
+          source === "cache" ? "last known one" : "built-in one"
+        }. A model retired since then will fail at request time.`,
+      );
+    }
+  }
+
+  // A tray app runs for weeks, so a catalog read once at startup goes stale: a
+  // newly served model would stay unusable until restart. Top it up in the
+  // background on the next request instead of blocking one on the network.
+  function refreshCatalogIfStale() {
+    if (pinned || refreshing || Date.now() - catalogAt < CATALOG_TTL_MS) return;
+    refreshing = refreshCatalog({ quiet: true })
+      .catch(() => {}) // a failed top-up just leaves the previous list in place
+      .finally(() => {
+        refreshing = null;
+      });
+  }
+
   async function warmup(host, port) {
     log.info(`[haven-proxy] listening on http://${host}:${port}/v1`);
     log.info(`[haven-proxy] relaying to ${havenApiRoot}/`);
-    log.info(`[haven-proxy] models: ${models.join(", ")}`);
+    // Tracked like a background top-up so a request arriving during startup waits
+    // for this one instead of firing a second fetch of the same list.
+    refreshing = refreshCatalog().finally(() => {
+      refreshing = null;
+    });
+    await refreshing;
     try {
       await relay.ready(); // pre-warm attestation; not fatal if it fails now
       log.info("[haven-proxy] enclave attested ✓");

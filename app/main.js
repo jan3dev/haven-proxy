@@ -27,7 +27,8 @@ import {
   normalizeBaseURL,
   DEFAULT_BASE_URL,
 } from "haven-proxy/config";
-import { validateKey, fetchPricing } from "haven-proxy/relay";
+import { validateKey } from "haven-proxy/relay";
+import { resolveCatalog } from "haven-proxy/catalog";
 import { logPath, windowsLauncherPath } from "haven-proxy/daemon";
 import { trayIcon } from "./tray-icon.js";
 
@@ -142,13 +143,13 @@ function consumeInstallOptions() {
 
 // --- OpenCode registration --------------------------------------------------
 
-// Best-effort price fetch for the OpenCode registrations. `undefined` on
-// failure keeps previously written (or default) prices — see resolveCosts in
-// the package's config.js.
-async function fetchCosts(baseURL) {
+// Best-effort catalog fetch for the OpenCode registrations, so the model picker
+// lists what the backend actually serves at today's prices. `undefined` on total
+// failure keeps whatever was written before — see resolveModels in config.js.
+async function fetchCatalogModels(baseURL) {
   const root = `${(baseURL || DEFAULT_BASE_URL).replace(/\/+$/, "")}/api/v1/haven`;
-  const pricing = await fetchPricing(root);
-  return pricing.ok ? pricing.costs : undefined;
+  const { models, source } = await resolveCatalog(root);
+  return source === "builtin" ? undefined : models;
 }
 
 // Re-assert the provider entries on every start: an install from before the
@@ -160,9 +161,9 @@ async function syncOpencode() {
   if (!cfg.apiKey) return; // keyless entries would list models that fail on first use
   if (cfg.registerOpencode === false) return; // user opted out — the toggle already removed the entries
   const log = ensureLog();
-  const costs = await fetchCosts(cfg.baseURL);
+  const catalog = await fetchCatalogModels(cfg.baseURL);
   try {
-    const { path, changed } = ensureOpencodeProvider(cfg.baseURL, { costs });
+    const { path, changed } = ensureOpencodeProvider(cfg.baseURL, { catalog });
     if (changed) log.info(`registered Haven providers in ${path}`);
     // cwd is wherever Electron was launched, so only check the global-dir override.
     const [shadow] = opencodeShadowingConfigs(path, { cwd: null });
@@ -177,9 +178,9 @@ async function syncOpencode() {
 
 async function toggleOpencode(enabled) {
   const { cfg } = loadConfig();
-  const costs = enabled ? await fetchCosts(cfg.baseURL) : undefined;
+  const catalog = enabled ? await fetchCatalogModels(cfg.baseURL) : undefined;
   try {
-    if (enabled) saveOpencodeProvider(cfg.baseURL, { costs });
+    if (enabled) saveOpencodeProvider(cfg.baseURL, { catalog });
     else removeOpencodeProvider();
     // Persist only after the write succeeded, so flag and on-disk state converge.
     saveConfig({ ...cfg, registerOpencode: enabled });
@@ -420,7 +421,7 @@ async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted
   try {
     // The backend may have changed, so fetch that backend's prices.
     if (cfg.registerOpencode !== false) {
-      ensureOpencodeProvider(baseURL, { costs: await fetchCosts(baseURL) });
+      ensureOpencodeProvider(baseURL, { catalog: await fetchCatalogModels(baseURL) });
     }
   } catch (err) {
     warning = `Saved, but could not update the OpenCode config: ${err.message}`;

@@ -8,7 +8,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import { MODEL_IDS, DEFAULT_BASE_URL, DEFAULT_PORT, DEFAULT_COST } from "../src/defaults.js";
+import {
+  MODELS,
+  MODEL_IDS,
+  DEFAULT_BASE_URL,
+  DEFAULT_PORT,
+  DEFAULT_COST,
+  DEFAULT_LIMIT,
+} from "../src/defaults.js";
 import {
   HAVEN_NPM_SPEC,
   opencodeConfigDir,
@@ -23,6 +30,11 @@ import {
 
 const ENV_KEYS = ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME", "APPDATA"];
 const ids = () => [...MODEL_IDS].sort().join();
+
+// A catalog as resolveCatalog would hand one over: the built-in list, with per-id
+// cost overrides applied.
+const catalogOf = (costs = {}) =>
+  MODELS.map((m) => ({ ...m, cost: costs[m.id] ?? m.cost }));
 
 let dir;
 let saved;
@@ -196,35 +208,51 @@ describe("ensureOpencodeProvider", () => {
 
   test("re-registers when fetched costs differ from what's on disk", () => {
     saveOpencodeProvider(DEFAULT_BASE_URL);
-    const costs = { [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } };
+    const catalog = catalogOf({ [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } });
 
-    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, { costs }).stale, true);
-    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, true);
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, { catalog }).stale, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog }).changed, true);
     const doc = read();
     for (const id of ["haven", "haven-local"]) {
-      assert.deepEqual(doc.provider[id].models[MODEL_IDS[0]].cost, costs[MODEL_IDS[0]]);
-      assert.deepEqual(doc.provider[id].models[MODEL_IDS[1]].cost, DEFAULT_COST); // uncovered id keeps its price
+      assert.deepEqual(doc.provider[id].models[MODEL_IDS[0]].cost, { input: 1.25, output: 5.25 });
+      assert.deepEqual(doc.provider[id].models[MODEL_IDS[1]].cost, DEFAULT_COST);
     }
-    // Same fetched costs again → nothing to do.
-    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, false);
+    // Same catalog again → nothing to do.
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog }).changed, false);
   });
 
-  test("a fetched price repairs a hand-edited cost; unknown ids are ignored", () => {
+  test("a fetched price repairs a hand-edited cost", () => {
     saveOpencodeProvider(DEFAULT_BASE_URL);
     const doc = read();
     doc.provider.haven.models[MODEL_IDS[0]].cost = { input: 99, output: 99 };
     write(doc);
 
-    const costs = { [MODEL_IDS[0]]: DEFAULT_COST, "not-a-haven-model": { input: 1, output: 1 } };
-    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { costs }).changed, true);
-    const repaired = read();
-    assert.deepEqual(repaired.provider.haven.models[MODEL_IDS[0]].cost, DEFAULT_COST);
-    assert.equal("not-a-haven-model" in repaired.provider.haven.models, false);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog: catalogOf() }).changed, true);
+    assert.deepEqual(read().provider.haven.models[MODEL_IDS[0]].cost, DEFAULT_COST);
   });
 
-  test("without fetched costs, prices already on disk survive a re-ensure", () => {
+  test("the fetched catalog decides the model list, not the built-in one", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL);
+    // The backend retired one model and shipped another we've never heard of.
+    const catalog = [
+      ...catalogOf().filter((m) => m.id !== MODEL_IDS[0]),
+      { id: "kimi-k3", name: "Kimi K3 (Haven)", limit: DEFAULT_LIMIT, cost: { input: 2, output: 6 } },
+    ];
+
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog }).changed, true);
+    const models = read().provider.haven.models;
+    assert.equal(MODEL_IDS[0] in models, false, "a retired model must not stay registered");
+    assert.deepEqual(models["kimi-k3"], {
+      name: "Kimi K3 (Haven)",
+      limit: DEFAULT_LIMIT,
+      cost: { input: 2, output: 6 },
+    });
+  });
+
+  test("without a fetched catalog, prices already on disk survive a re-ensure", () => {
+    const catalog = catalogOf({ [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } });
     const costs = { [MODEL_IDS[0]]: { input: 1.25, output: 5.25 } };
-    saveOpencodeProvider(DEFAULT_BASE_URL, { costs });
+    saveOpencodeProvider(DEFAULT_BASE_URL, { catalog });
 
     // Offline refresh (no costs): the previously fetched price must not regress.
     assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL).changed, false);
