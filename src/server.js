@@ -11,7 +11,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS } from "./relay.js";
 import { DEFAULT_BASE_URL, DEFAULT_PORT, MODEL_IDS } from "./defaults.js";
-import { resolveCatalog, CATALOG_TTL_MS } from "./catalog.js";
+import { resolveCatalog, CATALOG_TTL_MS, CATALOG_RETRY_MS } from "./catalog.js";
 
 export const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
 export { DEFAULT_PORT };
@@ -47,7 +47,7 @@ export function createProxyServer({
   // replaces this with the live catalog.
   const pinned = models?.length ? [...models] : null;
   let servedModels = pinned ?? DEFAULT_MODELS;
-  let catalogAt = 0; // when servedModels last came from resolveCatalog
+  let nextRefreshAt = 0; // earliest time refreshCatalogIfStale may fetch again
   let refreshing = null; // in-flight background refresh, so requests don't stack them
   if (pinned) relay.setServableModels(pinned);
 
@@ -178,7 +178,8 @@ export function createProxyServer({
     const { models: catalog, source, servableIds } = await resolveCatalog(havenApiRoot);
     servedModels = catalog.map((m) => m.id);
     relay.setServableModels(servableIds);
-    catalogAt = Date.now();
+    // Only a list from the backend earns the full TTL; a fallback gets retried soon.
+    nextRefreshAt = Date.now() + (source === "backend" ? CATALOG_TTL_MS : CATALOG_RETRY_MS);
     if (quiet) return; // a background top-up shouldn't narrate itself on every request
     log.info(`[haven-proxy] models: ${servedModels.join(", ")}`);
     if (source !== "backend") {
@@ -194,7 +195,7 @@ export function createProxyServer({
   // newly served model would stay unusable until restart. Top it up in the
   // background on the next request instead of blocking one on the network.
   function refreshCatalogIfStale() {
-    if (pinned || refreshing || Date.now() - catalogAt < CATALOG_TTL_MS) return;
+    if (pinned || refreshing || Date.now() < nextRefreshAt) return;
     refreshing = refreshCatalog({ quiet: true })
       .catch(() => {}) // a failed top-up just leaves the previous list in place
       .finally(() => {

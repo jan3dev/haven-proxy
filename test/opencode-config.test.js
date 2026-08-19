@@ -236,14 +236,14 @@ describe("ensureOpencodeProvider", () => {
     // The backend retired one model and shipped another we've never heard of.
     const catalog = [
       ...catalogOf().filter((m) => m.id !== MODEL_IDS[0]),
-      { id: "kimi-k3", name: "Kimi K3 (Haven)", limit: DEFAULT_LIMIT, cost: { input: 2, output: 6 } },
+      { id: "newcomer-9b", name: "Newcomer 9B (Haven)", limit: DEFAULT_LIMIT, cost: { input: 2, output: 6 } },
     ];
 
     assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog }).changed, true);
     const models = read().provider.haven.models;
     assert.equal(MODEL_IDS[0] in models, false, "a retired model must not stay registered");
-    assert.deepEqual(models["kimi-k3"], {
-      name: "Kimi K3 (Haven)",
+    assert.deepEqual(models["newcomer-9b"], {
+      name: "Newcomer 9B (Haven)",
       limit: DEFAULT_LIMIT,
       cost: { input: 2, output: 6 },
     });

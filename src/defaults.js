@@ -21,6 +21,7 @@ export const DEFAULT_LIMIT = { context: 131072, output: 32768 };
 export const MODELS = [
   { id: "gpt-oss-120b", name: "GPT-OSS 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
   { id: "gpt-oss-safeguard-120b", name: "GPT-OSS Safeguard 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
+  { id: "kimi-k3",      name: "Kimi K3 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST },
   { id: "glm-5-2",      name: "GLM-5.2 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST },
   { id: "gemma4-31b",   name: "Gemma 4 31B (Haven)",  limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
   { id: "llama3-3-70b", name: "Llama 3.3 70B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
