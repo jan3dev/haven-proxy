@@ -64,12 +64,12 @@ describe("resolveCatalog", () => {
 
   test("a model we've never heard of registers with a usable name and limit", async () => {
     const { models } = await withFetch(
-      async () => jsonResponse([priced("kimi-k3", "Kimi K3")]),
+      async () => jsonResponse([priced("newcomer-9b", "Newcomer 9B")]),
       () => resolveCatalog(ROOT, { now: NOW }),
     );
 
     assert.deepEqual(models, [
-      { id: "kimi-k3", name: "Kimi K3 (Haven)", limit: DEFAULT_LIMIT, cost: { input: 1.5, output: 5.25 } },
+      { id: "newcomer-9b", name: "Newcomer 9B (Haven)", limit: DEFAULT_LIMIT, cost: { input: 1.5, output: 5.25 } },
     ]);
   });
 

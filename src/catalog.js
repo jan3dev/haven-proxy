@@ -16,6 +16,12 @@ import { MODELS, mergeCatalog } from "./defaults.js";
 // dead one through to the error it would have got anyway.
 export const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
 
+// How long to sit on a fallback list before trying the backend again. A cached or
+// built-in list is not an answer from the backend, so it must not buy a full TTL of
+// silence: a proxy that started while Ankara was down has to recover on its own,
+// without re-fetching on every request while it stays down.
+export const CATALOG_RETRY_MS = 5 * 60 * 1000;
+
 // Fetch the live catalog, falling back to the last good one and then to the
 // built-in list. Returns { models, source, servableIds } where `servableIds` is
 // null whenever the list is too old or too unproven to reject a request over —
