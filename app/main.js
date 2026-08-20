@@ -9,7 +9,7 @@
 //     kill this whole app via its pid) — CLI `status` therefore reports "not
 //     running" while this app serves the port; the app detects the reverse
 //     case (CLI daemon already on the port) and shows "running (external)".
-import { app, Tray, Menu, BrowserWindow, ipcMain, shell, dialog, Notification } from "electron";
+import { app, Tray, Menu, BrowserWindow, ipcMain, shell, dialog, Notification, nativeTheme } from "electron";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createProxyServer, DEFAULT_PORT } from "haven-proxy/server";
@@ -97,6 +97,9 @@ app.whenReady().then(async () => {
   if (process.platform === "darwin") app.dock.hide();
   tray = new Tray(trayIcon(false));
   tray.setToolTip("Haven Proxy");
+  // The tray glyph is picked for the current light/dark tray background, so
+  // redraw it when the system theme flips under us.
+  nativeTheme.on("updated", updateTrayIcon);
   // No setContextMenu — build the menu on every open so status is current.
   tray.on("click", showMenu);
   tray.on("right-click", showMenu);

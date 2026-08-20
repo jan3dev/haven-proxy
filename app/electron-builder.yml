@@ -18,6 +18,9 @@ compression: maximum
 # Deletes Chromium's 20MB LICENSES.chromium.html; see README for attribution.
 afterPack: ./build/after-pack.cjs
 win:
+  # Multi-size .ico (16-256) so the exe, taskbar, and shortcuts stay crisp at
+  # every DPI; regenerate with scripts/make-icons.mjs.
+  icon: build/icon.ico
   # NSIS, not portable — portable exes extract to %TEMP%, so the launch-at-login
   # registry entry would point at a temp path.
   target: nsis
@@ -29,11 +32,14 @@ nsis:
   perMachine: false # per-user install, no UAC prompt
   include: build/installer.nsh
 mac:
+  # electron-builder derives the .icns from this 1024px master.
+  icon: build/icon.png
   target: dmg
   artifactName: HavenProxy-${version}-${arch}.${ext}
   extendInfo:
     LSUIElement: true # menu-bar-only app, no dock icon
 linux:
+  icon: build/icon.png
   target: AppImage
   category: Utility
   artifactName: HavenProxy-${version}.${ext}
