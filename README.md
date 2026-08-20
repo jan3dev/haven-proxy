@@ -98,7 +98,10 @@ npm run dist          # → app/dist/HavenProxy-Setup-<version>.exe (or .dmg / .
 ```
 
 `npm run dist` esbuilds `app/main.js` into `app/.bundle` and packages that directory, so run it via
-the script rather than calling `electron-builder` directly. To keep the installer down the build
+the script rather than calling `electron-builder` directly. Icons (`app/build/icon.ico` for the
+Windows executable and installer, `app/build/icon.png` as the mac/Linux master, and the tray glyphs
+in `app/tray-icons.generated.js`) are checked in; rebuild them from `app/build/haven-logomark.svg`
+with `node scripts/make-icons.mjs` after the artwork changes. To keep the installer down the build
 ships only the `en-US` Chromium locale and drops Chromium's 20MB bundled `LICENSES.chromium.html`.
 The app embeds [Electron](https://github.com/electron/electron) (MIT) and Chromium (BSD-3-Clause);
 Electron's `LICENSE` still ships with it, and Chromium's full third-party notices are the ones
