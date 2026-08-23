@@ -1,0 +1,65 @@
+# Daily check that the bootstrap model catalog (MODELS in src/defaults.js) still
+# matches what the backends serve. On drift it keeps exactly one issue open
+# (deduped by the catalog-drift label) and closes it once the lists reconcile.
+name: catalog-drift
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      # The script imports src/relay.js, which needs the installed SDK.
+      - run: npm ci
+
+      - name: Check catalog drift
+        id: drift
+        shell: bash
+        run: |
+          set +e
+          node scripts/check-catalog-drift.mjs | tee drift-report.txt
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the drift issue
+        if: steps.drift.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh label create catalog-drift --description "Bootstrap model catalog diverges from the backend" --force
+          body="$(printf 'Reported by the daily catalog-drift workflow (%s).\n\n```\n%s\n```\n' \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$(cat drift-report.txt)")"
+          existing=$(gh issue list --label catalog-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body "$body"
+          else
+            gh issue create --title "Model catalog drift: src/defaults.js vs the backend" \
+              --label catalog-drift --body "$body"
+          fi
+
+      - name: Close the drift issue when clean
+        if: steps.drift.outputs.status == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          existing=$(gh issue list --label catalog-drift --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "The daily catalog-drift check passes again — the catalog is reconciled."
+          fi
+
+      # The job itself stays green on drift (the issue is the signal); only an
+      # infrastructure failure in the steps above fails the run.
