@@ -29,6 +29,12 @@ export const MODELS = [
 
 export const MODEL_IDS = MODELS.map((m) => m.id);
 
+// Preferred default model for fresh OpenCode setups: cheapest and fast. If the
+// live catalog no longer serves it, fall back to whatever the backend lists first.
+export const DEFAULT_MODEL_ID = "gpt-oss-120b";
+export const defaultModelId = (models = MODELS) =>
+  models.some((m) => m.id === DEFAULT_MODEL_ID) ? DEFAULT_MODEL_ID : models[0]?.id;
+
 const BUILTIN_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
 // Turn the backend's `{ id, name, cost }` rows into full catalog entries. The

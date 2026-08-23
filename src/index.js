@@ -20,6 +20,7 @@ import { resolveCatalog } from "./catalog.js";
 import { loadConfig, saveConfig, deleteConfig, requireAuth, redactKey, normalizeBaseURL, promptApiKey, DEFAULT_BASE_URL, opencodeConfigPath, saveOpencodeProvider, removeOpencodeProvider, opencodeShadowingConfigs, pruneLegacyOpencodeConfig } from "./config.js";
 import { startDaemon, stopDaemon, statusDaemon, startupCommand } from "./daemon.js";
 import { createProxyServer, DEFAULT_PORT } from "./server.js";
+import { DEFAULT_MODEL_ID } from "./defaults.js";
 import { VERSION } from "./version.js";
 
 const HELP = `
@@ -63,6 +64,12 @@ Options (login):
       --force                     Save even if the backend rejects the key (401)
   -p, --port         <n>          Port the local proxy will use, for the "haven-local"
                                   OpenCode provider entry                              (default: ${DEFAULT_PORT})
+      --no-default-model          Don't set Haven as OpenCode's default model. By default,
+                                  login points OpenCode's default model at
+                                  "haven-local/${DEFAULT_MODEL_ID}" for a faster first prompt
+                                  (the local proxy keeps the attestation warm). A default
+                                  you set by hand to another provider is never overwritten.
+      --default-model             Re-enable that after a --no-default-model
 
 Global:
   -h, --help                      Show this help and exit
@@ -96,10 +103,18 @@ if (subcommand === "login") {
       "base-url": { type: "string", short: "u" },
       "force":    { type: "boolean" },
       "port":     { type: "string", short: "p" },
+      // parseArgs has no automatic --no- negation, so both directions are explicit.
+      "default-model":    { type: "boolean" },
+      "no-default-model": { type: "boolean" },
       "help":     { type: "boolean", short: "h" },
     },
     strict: true,
   });
+  if (values["default-model"] && values["no-default-model"]) {
+    console.error("[haven-proxy] --default-model and --no-default-model contradict each other.");
+    process.exitCode = 1;
+    return;
+  }
   if (values.help) { console.log(HELP); }
   else {
     const { cfg } = loadConfig();
@@ -141,7 +156,12 @@ if (subcommand === "login") {
         } else if (result.reason === "empty_balance") {
           process.stdout.write("valid (balance $0.00 — top up before sending requests)\n");
         }
-        const path = saveConfig({ ...cfg, apiKey, baseURL });
+        // The flag persists so later logins and the tray app honor the choice.
+        const nextCfg = { ...cfg, apiKey, baseURL };
+        if (values["no-default-model"]) nextCfg.opencodeDefaultModel = false;
+        else if (values["default-model"]) nextCfg.opencodeDefaultModel = true;
+        const setDefaultModel = nextCfg.opencodeDefaultModel !== false;
+        const path = saveConfig(nextCfg);
         console.log(`[haven-proxy] Credentials saved to ${path}`);
         const proxyPort = Number(values.port) || DEFAULT_PORT;
         const ocTarget = opencodeConfigPath();
@@ -154,9 +174,10 @@ if (subcommand === "login") {
         }
         console.log(`[haven-proxy] Writing Haven providers to ${ocTarget}…`);
         try {
-          const { path: ocPath, existed, otherProviders } = saveOpencodeProvider(baseURL, {
+          const { path: ocPath, existed, otherProviders, defaultModel, keptModel } = saveOpencodeProvider(baseURL, {
             proxyPort,
             catalog: catalog.source === "builtin" ? undefined : catalog.models,
+            setDefaultModel,
           });
           const preserved = otherProviders.length
             ? `(preserved: ${otherProviders.join(", ")})`
@@ -165,8 +186,16 @@ if (subcommand === "login") {
           for (const shadow of opencodeShadowingConfigs(ocPath)) {
             console.warn(`[haven-proxy] Note: ${shadow} also defines a "haven" provider and takes precedence over the global config.`);
           }
-          console.log(`[haven-proxy] Restart OpenCode, then pick "haven/gpt-oss-120b" (or any Haven model).`);
-          console.log(`[haven-proxy] "haven/…" needs no proxy; "haven-local/…" relays through haven-proxy start on port ${proxyPort}.`);
+          if (defaultModel) {
+            console.log(`[haven-proxy] Set OpenCode's default model to "${defaultModel}" for a faster first prompt (opt out with --no-default-model).`);
+            console.log(`[haven-proxy] Restart OpenCode — new sessions use "${defaultModel}" through the proxy on port ${proxyPort}.`);
+          } else if (keptModel) {
+            console.log(`[haven-proxy] Kept your existing OpenCode default model "${keptModel}" — pick a haven-local/… model in OpenCode to use Haven.`);
+            console.log(`[haven-proxy] Restart OpenCode, then pick "haven-local/${DEFAULT_MODEL_ID}" (or any Haven model).`);
+          } else {
+            console.log(`[haven-proxy] Restart OpenCode, then pick "haven-local/${DEFAULT_MODEL_ID}" (or any Haven model).`);
+          }
+          console.log(`[haven-proxy] "haven-local/…" relays through haven-proxy start on port ${proxyPort}; "haven/…" needs no proxy.`);
         } catch (err) {
           console.warn(`[haven-proxy] Warning: could not write to ${ocTarget}: ${err.message}`);
           console.warn(`[haven-proxy] Add the Haven provider to ${ocTarget} manually — see README.`);

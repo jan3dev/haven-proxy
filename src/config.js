@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { DEFAULT_BASE_URL, DEFAULT_PORT, MODELS, opencodeModels } from "./defaults.js";
+import { DEFAULT_BASE_URL, DEFAULT_PORT, MODELS, defaultModelId, opencodeModels } from "./defaults.js";
 
 export { DEFAULT_BASE_URL };
 
@@ -138,6 +138,21 @@ export function normalizeBaseURL(input) {
 const OPENCODE_SCHEMA = "https://opencode.ai/config.json";
 // The two provider ids we own; everything else in the file is the user's.
 const MANAGED_IDS = ["haven", "haven-local"];
+
+// A top-level `model` value is ours to manage only while it points at one of our
+// providers. A hand-set third-party default is never touched — the write and the
+// staleness check both use this predicate, and they must stay mirrored or
+// `ensure` would rewrite the file on every run.
+const isManagedModel = (value) =>
+  typeof value === "string" && MANAGED_IDS.some((id) => value.startsWith(`${id}/`));
+
+// haven-local, not haven: the local proxy keeps the attestation warm, which is
+// the whole point of defaulting — the in-process provider pays a cold handshake
+// on the first prompt because OpenCode instantiates providers lazily.
+const desiredDefaultModel = (models) => {
+  const id = defaultModelId(models);
+  return id ? `haven-local/${id}` : null;
+};
 // #semver: resolves against release tags, so users always install the latest
 // 0.x release instead of whatever is on main. Bump the range at 1.0.
 export const HAVEN_NPM_SPEC = "github:jan3dev/haven-proxy#semver:0.x";
@@ -266,7 +281,9 @@ function sameEntry(actual, want) {
 
 // Is our pair of entries present, and does it match what we'd write now?
 // `catalog` (optional, from resolveCatalog) feeds the resolution in resolveModels.
-export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT, catalog } = {}) {
+// With `setDefaultModel`, a missing or managed-but-outdated top-level `model`
+// also counts as stale — a third-party value never does (mirror of the write).
+export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT, catalog, setDefaultModel } = {}) {
   const path = opencodeConfigPath();
   let doc;
   try {
@@ -274,49 +291,99 @@ export function opencodeProviderStatus(baseURL, { proxyPort = DEFAULT_PORT, cata
   } catch {
     return { path, registered: false, stale: true }; // malformed: let a write report why
   }
-  const want = havenProviders(baseURL, proxyPort, resolveModels(doc, catalog));
+  const models = resolveModels(doc, catalog);
+  const want = havenProviders(baseURL, proxyPort, models);
   const registered = MANAGED_IDS.every((id) => Boolean(doc.provider?.[id]));
-  const stale = !registered || MANAGED_IDS.some((id) => !sameEntry(doc.provider[id], want[id]));
+  let stale = !registered || MANAGED_IDS.some((id) => !sameEntry(doc.provider[id], want[id]));
+  if (setDefaultModel && !stale) {
+    const desired = desiredDefaultModel(models);
+    stale = Boolean(
+      desired &&
+        (doc.model === undefined || (isManagedModel(doc.model) && doc.model !== desired)),
+    );
+  }
   return { path, registered, stale };
 }
 
 // Merge both Haven provider entries into the global OpenCode config. Creates the
-// file if absent; preserves every other provider and top-level key.
-export function saveOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, catalog } = {}) {
+// file if absent; preserves every other provider and top-level key. With
+// `setDefaultModel`, also points OpenCode's top-level `model` at haven-local for
+// a faster first prompt — but only when the key is absent or already ours
+// (`defaultModel` reports what was written, `keptModel` a value we refused to touch).
+export function saveOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, catalog, setDefaultModel } = {}) {
   const path = opencodeConfigPath();
   assertWritable(path);
   const { doc, existed } = readJsonDoc(path);
   const otherProviders = Object.keys(doc.provider || {}).filter((k) => !MANAGED_IDS.includes(k));
   if (!doc.$schema) doc.$schema = OPENCODE_SCHEMA;
+  const models = resolveModels(doc, catalog);
   // Spread over the old entries so a plaintext key an older version wrote is dropped.
   doc.provider = {
     ...doc.provider,
-    ...havenProviders(baseURL, proxyPort, resolveModels(doc, catalog)),
+    ...havenProviders(baseURL, proxyPort, models),
   };
+  let defaultModel = null;
+  let keptModel = null;
+  if (setDefaultModel) {
+    const desired = desiredDefaultModel(models);
+    if (desired && (doc.model === undefined || isManagedModel(doc.model))) {
+      doc.model = defaultModel = desired;
+    } else if (desired) {
+      keptModel = doc.model;
+    }
+  }
   writeJsonDoc(path, doc);
-  return { path, existed, otherProviders };
+  return { path, existed, otherProviders, defaultModel, keptModel };
 }
 
 // Registration has to be re-assertable: users who installed before the path fix,
 // or who wiped their OpenCode config, would otherwise never be repaired.
-export function ensureOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, catalog } = {}) {
-  const { path, registered, stale } = opencodeProviderStatus(baseURL, { proxyPort, catalog });
+export function ensureOpencodeProvider(baseURL, { proxyPort = DEFAULT_PORT, catalog, setDefaultModel } = {}) {
+  const { path, registered, stale } = opencodeProviderStatus(baseURL, { proxyPort, catalog, setDefaultModel });
   if (registered && !stale) return { path, changed: false };
-  return { ...saveOpencodeProvider(baseURL, { proxyPort, catalog }), changed: true };
+  return { ...saveOpencodeProvider(baseURL, { proxyPort, catalog, setDefaultModel }), changed: true };
 }
 
 // Remove both Haven provider entries from the global OpenCode config on logout.
+// A managed default model goes with them — left behind it would point OpenCode
+// at a provider that no longer exists. A third-party default stays.
 export function removeOpencodeProvider() {
   const path = opencodeConfigPath();
   const { doc, existed } = readJsonDoc(path);
   if (!existed) return { path, removed: false };
   const present = MANAGED_IDS.filter((id) => doc.provider?.[id]);
-  if (!present.length) return { path, removed: false };
+  const ownsModel = isManagedModel(doc.model);
+  if (!present.length && !ownsModel) return { path, removed: false };
   assertWritable(path);
   for (const id of present) delete doc.provider[id];
-  if (!Object.keys(doc.provider).length) delete doc.provider;
+  if (present.length && !Object.keys(doc.provider).length) delete doc.provider;
+  if (ownsModel) delete doc.model;
   writeJsonDoc(path, doc);
   return { path, removed: true };
+}
+
+// Unset our default model but keep the provider entries (the tray app's
+// "default model" toggle turning off).
+export function removeOpencodeDefaultModel() {
+  const path = opencodeConfigPath();
+  const { doc, existed } = readJsonDoc(path);
+  if (!existed || !isManagedModel(doc.model)) return { path, removed: false };
+  assertWritable(path);
+  delete doc.model;
+  writeJsonDoc(path, doc);
+  return { path, removed: true };
+}
+
+// Does opencode.json currently carry a default model we own? Drives the tray
+// checkbox from on-disk truth, like opencodeProviderStatus does for registration.
+export function opencodeDefaultModelStatus() {
+  const path = opencodeConfigPath();
+  try {
+    const { doc } = readJsonDoc(path);
+    return { path, set: isManagedModel(doc.model) };
+  } catch {
+    return { path, set: false };
+  }
 }
 
 // A successful write can still be overridden: OpenCode merges the global
@@ -367,10 +434,12 @@ export function pruneLegacyOpencodeConfig() {
   }
   if (!existed) return { path, pruned: false };
   const present = MANAGED_IDS.filter((id) => doc.provider?.[id]);
-  if (!present.length) return { path, pruned: false };
+  const ownsModel = isManagedModel(doc.model);
+  if (!present.length && !ownsModel) return { path, pruned: false };
 
   for (const id of present) delete doc.provider[id];
-  if (!Object.keys(doc.provider).length) delete doc.provider;
+  if (present.length && !Object.keys(doc.provider).length) delete doc.provider;
+  if (ownsModel) delete doc.model;
   if (!Object.keys(doc).some((k) => k !== "$schema")) {
     rmSync(path); // nothing but the schema stub left — drop the file entirely
     try {

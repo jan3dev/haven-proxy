@@ -15,6 +15,8 @@ import {
   DEFAULT_PORT,
   DEFAULT_COST,
   DEFAULT_LIMIT,
+  DEFAULT_MODEL_ID,
+  defaultModelId,
 } from "../src/defaults.js";
 import {
   HAVEN_NPM_SPEC,
@@ -24,6 +26,8 @@ import {
   saveOpencodeProvider,
   ensureOpencodeProvider,
   removeOpencodeProvider,
+  removeOpencodeDefaultModel,
+  opencodeDefaultModelStatus,
   opencodeShadowingConfigs,
   pruneLegacyOpencodeConfig,
 } from "../src/config.js";
@@ -334,6 +338,121 @@ describe("removeOpencodeProvider", () => {
   });
 });
 
+describe("default model", () => {
+  const opts = { setDefaultModel: true };
+  const desired = `haven-local/${DEFAULT_MODEL_ID}`;
+
+  test("save with setDefaultModel writes model: haven-local/<preferred id>", () => {
+    const { defaultModel, keptModel } = saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(defaultModel, desired);
+    assert.equal(keptModel, null);
+    assert.equal(read().model, desired);
+  });
+
+  test("without the option, no model key is written", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL);
+    assert.equal("model" in read(), false);
+  });
+
+  test("overwrites an existing managed value", () => {
+    write({ model: "haven/kimi-k3" });
+    const { defaultModel, keptModel } = saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(defaultModel, desired);
+    assert.equal(keptModel, null);
+    assert.equal(read().model, desired);
+  });
+
+  test("never clobbers a third-party value the user set by hand", () => {
+    write({ model: "anthropic/claude-sonnet-4-5" });
+    const { defaultModel, keptModel } = saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(defaultModel, null);
+    assert.equal(keptModel, "anthropic/claude-sonnet-4-5");
+    assert.equal(read().model, "anthropic/claude-sonnet-4-5");
+  });
+
+  test("a catalog without the preferred id falls back to its first model", () => {
+    const catalog = [{ id: "newcomer-9b", name: "Newcomer 9B (Haven)", limit: DEFAULT_LIMIT, cost: { input: 2, output: 6 } }];
+    saveOpencodeProvider(DEFAULT_BASE_URL, { ...opts, catalog });
+    assert.equal(read().model, "haven-local/newcomer-9b");
+  });
+
+  // Regression guard for the rewrite loop: the staleness predicate must mirror
+  // the write predicate, or a third-party model would stay "stale" forever.
+  test("ensure converges when a third-party model stays untouched", () => {
+    write({ model: "anthropic/claude-sonnet-4-5" });
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, opts).changed, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, opts).changed, false);
+    assert.equal(read().model, "anthropic/claude-sonnet-4-5");
+  });
+
+  test("a managed-but-wrong value counts as stale and is repaired", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    const doc = read();
+    doc.model = `haven/${DEFAULT_MODEL_ID}`; // hand-edited to the cold path
+    write(doc);
+
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, opts).stale, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, opts).changed, true);
+    assert.equal(read().model, desired);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, opts).changed, false);
+  });
+
+  test("a missing model key is stale with the option on, not stale with it off", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL); // providers only
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, opts).stale, true);
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL).stale, false);
+  });
+
+  test("removeOpencodeProvider strips a managed model, keeps a third-party one", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(removeOpencodeProvider().removed, true);
+    assert.equal("model" in read(), false);
+
+    write({ model: "anthropic/claude-sonnet-4-5", provider: { haven: {}, "haven-local": {} } });
+    removeOpencodeProvider();
+    assert.equal(read().model, "anthropic/claude-sonnet-4-5");
+  });
+
+  test("removeOpencodeProvider reports removed when only the model key was ours", () => {
+    write({ model: desired });
+    assert.equal(removeOpencodeProvider().removed, true);
+    assert.equal("model" in read(), false);
+  });
+
+  test("removeOpencodeDefaultModel removes only the model key", () => {
+    saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(removeOpencodeDefaultModel().removed, true);
+    const doc = read();
+    assert.equal("model" in doc, false);
+    assert.ok(doc.provider.haven, "provider entries must survive");
+  });
+
+  test("removeOpencodeDefaultModel is a no-op on absent file, absent key, or third-party value", () => {
+    assert.equal(removeOpencodeDefaultModel().removed, false); // no file
+    write({ provider: { haven: {} } });
+    assert.equal(removeOpencodeDefaultModel().removed, false); // no key
+    write({ model: "anthropic/claude-sonnet-4-5" });
+    assert.equal(removeOpencodeDefaultModel().removed, false); // not ours
+    assert.equal(read().model, "anthropic/claude-sonnet-4-5");
+  });
+
+  test("opencodeDefaultModelStatus reflects on-disk ownership", () => {
+    assert.equal(opencodeDefaultModelStatus().set, false); // no file
+    saveOpencodeProvider(DEFAULT_BASE_URL, opts);
+    assert.equal(opencodeDefaultModelStatus().set, true);
+    removeOpencodeDefaultModel();
+    assert.equal(opencodeDefaultModelStatus().set, false);
+    write({ model: "anthropic/claude-sonnet-4-5" });
+    assert.equal(opencodeDefaultModelStatus().set, false);
+  });
+
+  test("defaultModelId prefers the constant, falls back to first, and an empty list writes no key", () => {
+    assert.equal(defaultModelId(MODELS), DEFAULT_MODEL_ID);
+    assert.equal(defaultModelId([{ id: "other" }]), "other");
+    assert.equal(defaultModelId([]), undefined);
+  });
+});
+
 describe("opencodeShadowingConfigs", () => {
   const target = () => opencodeConfigPath();
 
@@ -406,6 +525,22 @@ describe("pruneLegacyOpencodeConfig", () => {
     assert.equal(doc.provider.haven, undefined);
     assert.equal(doc.provider["haven-local"], undefined);
     assert.ok(doc.provider.openai);
+  });
+
+  test("a managed model key counts as ours; a third-party one survives", win32Only, () => {
+    writeLegacy({
+      $schema: "https://opencode.ai/config.json",
+      provider: { haven: {} },
+      model: "haven-local/gpt-oss-120b",
+    });
+    assert.equal(pruneLegacyOpencodeConfig().pruned, true);
+    assert.equal(existsSync(legacyPath()), false); // nothing but the schema stub was left
+
+    writeLegacy({ provider: { haven: {} }, model: "anthropic/claude-sonnet-4-5" });
+    assert.equal(pruneLegacyOpencodeConfig().pruned, true);
+    const doc = JSON.parse(readFileSync(legacyPath(), "utf8"));
+    assert.equal(doc.model, "anthropic/claude-sonnet-4-5");
+    assert.equal("provider" in doc, false);
   });
 
   test("is a no-op when there is no legacy file or nothing of ours in it", win32Only, () => {

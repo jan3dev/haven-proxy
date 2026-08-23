@@ -19,8 +19,10 @@ import {
   configPath,
   saveOpencodeProvider,
   removeOpencodeProvider,
+  removeOpencodeDefaultModel,
   ensureOpencodeProvider,
   opencodeProviderStatus,
+  opencodeDefaultModelStatus,
   opencodeShadowingConfigs,
   pruneLegacyOpencodeConfig,
   redactKey,
@@ -133,9 +135,11 @@ function consumeInstallOptions() {
   }
   try {
     const { cfg } = loadConfig();
-    if (typeof seed.registerOpencode === "boolean" && !("registerOpencode" in cfg)) {
-      saveConfig({ ...cfg, registerOpencode: seed.registerOpencode });
+    const patch = {};
+    for (const key of ["registerOpencode", "opencodeDefaultModel"]) {
+      if (typeof seed[key] === "boolean" && !(key in cfg)) patch[key] = seed[key];
     }
+    if (Object.keys(patch).length) saveConfig({ ...cfg, ...patch });
   } finally {
     rmSync(seedPath, { force: true });
   }
@@ -163,7 +167,10 @@ async function syncOpencode() {
   const log = ensureLog();
   const catalog = await fetchCatalogModels(cfg.baseURL);
   try {
-    const { path, changed } = ensureOpencodeProvider(cfg.baseURL, { catalog });
+    const { path, changed } = ensureOpencodeProvider(cfg.baseURL, {
+      catalog,
+      setDefaultModel: cfg.opencodeDefaultModel !== false,
+    });
     if (changed) log.info(`registered Haven providers in ${path}`);
     // cwd is wherever Electron was launched, so only check the global-dir override.
     const [shadow] = opencodeShadowingConfigs(path, { cwd: null });
@@ -180,8 +187,14 @@ async function toggleOpencode(enabled) {
   const { cfg } = loadConfig();
   const catalog = enabled ? await fetchCatalogModels(cfg.baseURL) : undefined;
   try {
-    if (enabled) saveOpencodeProvider(cfg.baseURL, { catalog });
-    else removeOpencodeProvider();
+    if (enabled) {
+      saveOpencodeProvider(cfg.baseURL, {
+        catalog,
+        setDefaultModel: cfg.opencodeDefaultModel !== false,
+      });
+    } else {
+      removeOpencodeProvider(); // also strips a default model we own
+    }
     // Persist only after the write succeeded, so flag and on-disk state converge.
     saveConfig({ ...cfg, registerOpencode: enabled });
     opencodeWarning = "";
@@ -191,6 +204,37 @@ async function toggleOpencode(enabled) {
       message: enabled
         ? "Could not register the Haven providers with OpenCode."
         : "Could not remove the Haven providers from the OpenCode config.",
+      detail: err.message,
+    });
+  }
+}
+
+async function toggleDefaultModel(enabled) {
+  const { cfg } = loadConfig();
+  try {
+    let keptModel = null;
+    if (enabled) {
+      ({ keptModel } = saveOpencodeProvider(cfg.baseURL, {
+        catalog: await fetchCatalogModels(cfg.baseURL),
+        setDefaultModel: true,
+      }));
+    } else {
+      removeOpencodeDefaultModel();
+    }
+    saveConfig({ ...cfg, opencodeDefaultModel: enabled });
+    if (keptModel) {
+      dialog.showMessageBox({
+        type: "info",
+        message: `Kept your existing OpenCode default model "${keptModel}".`,
+        detail: "Haven only replaces a default that points at its own providers. Change the model in OpenCode (or edit opencode.json) if you want Haven as the default.",
+      });
+    }
+  } catch (err) {
+    dialog.showMessageBox({
+      type: "error",
+      message: enabled
+        ? "Could not set OpenCode's default model."
+        : "Could not unset OpenCode's default model.",
       detail: err.message,
     });
   }
@@ -241,7 +285,15 @@ function buildMenu() {
       enabled: Boolean(cfg.apiKey),
       click: (item) => toggleOpencode(item.checked),
     },
-    { label: "OpenCode works without the proxy running", enabled: false },
+    {
+      label: "Use Haven as OpenCode's default model",
+      type: "checkbox",
+      checked: opencodeDefaultModelStatus().set,
+      enabled: Boolean(cfg.apiKey) && cfg.registerOpencode !== false,
+      click: (item) => toggleDefaultModel(item.checked),
+    },
+    { label: "Changes OpenCode's default model — faster first prompt", enabled: false },
+    { label: "haven/… models work without the proxy running", enabled: false },
     ...(opencodeWarning ? [{ label: opencodeWarning, enabled: false }] : []),
     { type: "separator" },
     { label: "Open logs", click: () => shell.openPath(logPath()) },
@@ -421,7 +473,10 @@ async function applySettings(cfg, { apiKey, baseURL }, result, { notifyIfStarted
   try {
     // The backend may have changed, so fetch that backend's prices.
     if (cfg.registerOpencode !== false) {
-      ensureOpencodeProvider(baseURL, { catalog: await fetchCatalogModels(baseURL) });
+      ensureOpencodeProvider(baseURL, {
+        catalog: await fetchCatalogModels(baseURL),
+        setDefaultModel: cfg.opencodeDefaultModel !== false,
+      });
     }
   } catch (err) {
     warning = `Saved, but could not update the OpenCode config: ${err.message}`;
