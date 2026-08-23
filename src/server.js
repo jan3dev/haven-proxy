@@ -175,13 +175,23 @@ export function createProxyServer({
       if (!quiet) log.info(`[haven-proxy] models (pinned): ${servedModels.join(", ")}`);
       return;
     }
-    const { models: catalog, source, servableIds } = await resolveCatalog(havenApiRoot);
+    const { models: catalog, source, servableIds, retiring } = await resolveCatalog(havenApiRoot);
     servedModels = catalog.map((m) => m.id);
     relay.setServableModels(servableIds);
     // Only a list from the backend earns the full TTL; a fallback gets retried soon.
     nextRefreshAt = Date.now() + (source === "backend" ? CATALOG_TTL_MS : CATALOG_RETRY_MS);
     if (quiet) return; // a background top-up shouldn't narrate itself on every request
     log.info(`[haven-proxy] models: ${servedModels.join(", ")}`);
+    if (retiring.length) {
+      // Warn, never block: a deprecated model still relays until the backend
+      // actually drops it from the catalog.
+      const names = retiring
+        .map((m) => (m.sunset_on ? `${m.id} (until ${m.sunset_on})` : m.id))
+        .join(", ");
+      log.warn(
+        `[haven-proxy] Deprecated or sunsetting models still served: ${names} — switch models before they are retired.`,
+      );
+    }
     if (source !== "backend") {
       log.warn(
         `[haven-proxy] Could not fetch the model list — using the ${

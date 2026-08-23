@@ -15,16 +15,17 @@ export const DEFAULT_LIMIT = { context: 131072, output: 32768 };
 
 // Bootstrap catalog: what we assume the backend serves until it tells us
 // otherwise. The live list comes from the backend's pricing endpoint (see
-// src/catalog.js); this is the fallback for a first run with no network, and the
-// source of the display names and limits that endpoint doesn't carry. An entry
-// here is not proof a model still exists — models get retired upstream.
+// src/catalog.js); this is only the fallback for a first run with no network,
+// and it fills any field the endpoint doesn't publish yet. An entry here is not
+// proof a model still exists — models get retired upstream. Capability fields
+// are optional and only stated where known; the backend's values outrank them.
 export const MODELS = [
-  { id: "gpt-oss-120b", name: "GPT-OSS 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
-  { id: "gpt-oss-safeguard-120b", name: "GPT-OSS Safeguard 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
-  { id: "kimi-k3",      name: "Kimi K3 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST },
-  { id: "glm-5-2",      name: "GLM-5.2 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST },
+  { id: "gpt-oss-120b", name: "GPT-OSS 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST, capabilities: { tool_call: true, reasoning: true } },
+  { id: "gpt-oss-safeguard-120b", name: "GPT-OSS Safeguard 120B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST, capabilities: { tool_call: true, reasoning: true } },
+  { id: "kimi-k3",      name: "Kimi K3 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST, capabilities: { tool_call: true } },
+  { id: "glm-5-2",      name: "GLM-5.2 (Haven)",      limit: { context: 200000, output: 65536 }, cost: DEFAULT_COST, capabilities: { tool_call: true } },
   { id: "gemma4-31b",   name: "Gemma 4 31B (Haven)",  limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
-  { id: "llama3-3-70b", name: "Llama 3.3 70B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST },
+  { id: "llama3-3-70b", name: "Llama 3.3 70B (Haven)", limit: { context: 131072, output: 32768 }, cost: DEFAULT_COST, capabilities: { tool_call: true } },
 ];
 
 export const MODEL_IDS = MODELS.map((m) => m.id);
@@ -37,20 +38,49 @@ export const defaultModelId = (models = MODELS) =>
 
 const BUILTIN_BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
-// Turn the backend's `{ id, name, cost }` rows into full catalog entries. The
-// backend owns which models exist and what they cost; names and limits come from
-// MODELS, which is why a model we've never heard of still registers cleanly.
+// Turn the backend's catalog rows (see fetchCatalog in relay.js) into full
+// catalog entries. The backend is the one component that knows what it serves,
+// so every field it publishes wins; MODELS only fills the gaps, which is why a
+// model we've never heard of still registers cleanly. Resolution is per field,
+// not per entry — a backend that publishes context_length but not max_output
+// still gets the built-in output ceiling.
 export const mergeCatalog = (fetched) =>
-  fetched.map(({ id, name, cost }) => {
-    const builtin = BUILTIN_BY_ID.get(id);
+  fetched.map((row) => {
+    const builtin = BUILTIN_BY_ID.get(row.id);
+    const capabilities = { ...builtin?.capabilities, ...row.capabilities };
+    const modalities = row.modalities ?? builtin?.modalities;
+    const status = row.status ?? builtin?.status;
+    // Undefined fields are omitted, not written as null — it keeps the generated
+    // opencode.json minimal and the staleness comparison in config.js stable.
     return {
-      id,
-      name: builtin?.name ?? `${name || id} (Haven)`,
-      limit: builtin?.limit ?? DEFAULT_LIMIT,
-      cost,
+      id: row.id,
+      name: row.name ? `${row.name} (Haven)` : (builtin?.name ?? `${row.id} (Haven)`),
+      limit: {
+        context: row.limit?.context ?? builtin?.limit?.context ?? DEFAULT_LIMIT.context,
+        output: row.limit?.output ?? builtin?.limit?.output ?? DEFAULT_LIMIT.output,
+      },
+      cost: row.cost,
+      ...(Object.keys(capabilities).length && { capabilities }),
+      ...(modalities && { modalities }),
+      ...(status && { status }),
+      ...(row.sunset_on && { sunset_on: row.sunset_on }),
     };
   });
 
-// Shape OpenCode expects under provider.<id>.models.
+// Shape OpenCode expects under provider.<id>.models. Its schema takes the
+// capability booleans flat on the model entry; sunset_on is proxy-only (it
+// drives the retirement warning) and deliberately never written.
 export const opencodeModels = (models = MODELS) =>
-  Object.fromEntries(models.map(({ id, name, limit, cost }) => [id, { name, limit, cost }]));
+  Object.fromEntries(
+    models.map(({ id, name, limit, cost, capabilities, modalities, status }) => [
+      id,
+      {
+        name,
+        limit,
+        cost,
+        ...capabilities,
+        ...(modalities && { modalities }),
+        ...(status && { status }),
+      },
+    ]),
+  );

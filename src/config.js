@@ -258,9 +258,9 @@ function resolveModels(doc, catalog) {
 
 // Compare only what matters: on-disk key order is arbitrary, and extra fields a
 // user added by hand are theirs to keep. A leftover options.apiKey from an older
-// version counts as a mismatch so the next write scrubs it. Name, limits and
-// cost count too, so a price change (fetched or catalog) propagates to existing
-// registrations on the next ensure.
+// version counts as a mismatch so the next write scrubs it. Name, limits, cost
+// and the capability fields count too, so a backend-published change propagates
+// to existing registrations on the next ensure.
 function sameEntry(actual, want) {
   return (
     actual?.npm === want.npm &&
@@ -273,7 +273,14 @@ function sameEntry(actual, want) {
         a?.name === m.name &&
         JSON.stringify(a?.limit) === JSON.stringify(m.limit) &&
         a?.cost?.input === m.cost.input &&
-        a?.cost?.output === m.cost.output
+        a?.cost?.output === m.cost.output &&
+        // undefined on both sides compares equal, so an absent field stays absent
+        // without counting as stale.
+        a?.tool_call === m.tool_call &&
+        a?.attachment === m.attachment &&
+        a?.reasoning === m.reasoning &&
+        a?.status === m.status &&
+        JSON.stringify(a?.modalities) === JSON.stringify(m.modalities)
       );
     })
   );

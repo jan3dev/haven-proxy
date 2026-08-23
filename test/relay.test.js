@@ -211,6 +211,91 @@ describe("fetchCatalog", () => {
     });
   });
 
+  test("keeps the optional metadata the backend publishes", async () => {
+    const result = await withFetch(
+      async () =>
+        jsonResponse([
+          {
+            id: "kimi-k3",
+            name: "Kimi K3",
+            input_cost: "1.58",
+            output_cost: "5.51",
+            context_length: 200000,
+            max_output: "65536", // strings follow the cost convention
+            capabilities: { tool_call: true, attachment: false, reasoning: true },
+            modalities: { input: ["text", "image"], output: ["text"] },
+            status: "active",
+            sunset_on: "2026-12-01",
+          },
+        ]),
+      () => fetchCatalog(ROOT),
+    );
+    assert.deepEqual(result.models, [
+      {
+        id: "kimi-k3",
+        name: "Kimi K3",
+        cost: { input: 1.58, output: 5.51 },
+        limit: { context: 200000, output: 65536 },
+        capabilities: { tool_call: true, attachment: false, reasoning: true },
+        modalities: { input: ["text", "image"], output: ["text"] },
+        status: "active",
+        sunset_on: "2026-12-01",
+      },
+    ]);
+  });
+
+  // Backward-compatibility guarantee: today's backend shape must parse to
+  // exactly today's row — no new keys, not even empty ones.
+  test("a row without the new fields parses byte-identical to before", async () => {
+    const result = await withFetch(
+      async () => jsonResponse([{ id: "kimi-k3", name: "Kimi K3", input_cost: "1.58", output_cost: "5.51" }]),
+      () => fetchCatalog(ROOT),
+    );
+    assert.deepEqual(result.models, [
+      { id: "kimi-k3", name: "Kimi K3", cost: { input: 1.58, output: 5.51 } },
+    ]);
+  });
+
+  test("drops just a malformed metadata field, never the servable row", async () => {
+    const result = await withFetch(
+      async () =>
+        jsonResponse([
+          {
+            id: "kimi-k3",
+            input_cost: "1.58",
+            output_cost: "5.51",
+            context_length: "big",                      // not a number
+            max_output: -5,                             // not positive
+            capabilities: { tool_call: "yes", reasoning: true, vision: true }, // non-boolean + unknown key
+            modalities: { input: ["text", "smell"], output: [] },              // unknown enum + empty
+            status: "retired",                          // not in the enum
+            sunset_on: "someday",                       // not a date
+          },
+        ]),
+      () => fetchCatalog(ROOT),
+    );
+    assert.deepEqual(result.models, [
+      {
+        id: "kimi-k3",
+        name: "",
+        cost: { input: 1.58, output: 5.51 },
+        capabilities: { reasoning: true },
+        modalities: { input: ["text"] },
+      },
+    ]);
+  });
+
+  test("a partial limit keeps the one valid side", async () => {
+    const result = await withFetch(
+      async () =>
+        jsonResponse([
+          { id: "kimi-k3", input_cost: "1", output_cost: "1", context_length: 200000, max_output: null },
+        ]),
+      () => fetchCatalog(ROOT),
+    );
+    assert.deepEqual(result.models[0].limit, { context: 200000 });
+  });
+
   test("non-array body or nothing usable → bad_response", async () => {
     const notArray = await withFetch(
       async () => jsonResponse({ prices: [] }),
