@@ -11,6 +11,8 @@
 !ifndef BUILD_UNINSTALLER
   Var RegisterOpencodeCheckbox
   Var RegisterOpencodeState
+  Var DefaultModelCheckbox
+  Var DefaultModelState
 !endif
 
 !macro customPageAfterChangeDir
@@ -30,26 +32,36 @@
     ${NSD_Check} $RegisterOpencodeCheckbox
     ${NSD_CreateLabel} 0 36u 100% 24u "Haven models then show up in OpenCode automatically. You can change this anytime from the tray menu."
     Pop $0
+    ${NSD_CreateCheckbox} 0 64u 100% 12u "&Use Haven as the default model in OpenCode (recommended)"
+    Pop $DefaultModelCheckbox
+    ${NSD_Check} $DefaultModelCheckbox
+    ${NSD_CreateLabel} 0 84u 100% 24u "Changes OpenCode's default model so your first prompt is fast. You can change this anytime from the tray menu."
+    Pop $0
     nsDialogs::Show
   FunctionEnd
 
   Function registerOpencodePageLeave
     ${NSD_GetState} $RegisterOpencodeCheckbox $RegisterOpencodeState
+    ${NSD_GetState} $DefaultModelCheckbox $DefaultModelState
   FunctionEnd
 !macroend
 
 !macro customInstall
   ${IfNot} ${FileExists} "$PROFILE\.haven-proxy\config.json"
-    ; Empty state (page skipped, e.g. silent install) defaults to registering.
+    ; Empty state (page skipped, e.g. silent install) defaults to enabling both.
     StrCpy $0 "true"
     ${If} $RegisterOpencodeState == ${BST_UNCHECKED}
       StrCpy $0 "false"
+    ${EndIf}
+    StrCpy $2 "true"
+    ${If} $DefaultModelState == ${BST_UNCHECKED}
+      StrCpy $2 "false"
     ${EndIf}
     CreateDirectory "$PROFILE\.haven-proxy"
     ClearErrors
     FileOpen $1 "$PROFILE\.haven-proxy\install-options.json" w
     ${IfNot} ${Errors}
-      FileWrite $1 '{"registerOpencode": $0}$\n'
+      FileWrite $1 '{"registerOpencode": $0, "opencodeDefaultModel": $2}$\n'
       FileClose $1
     ${EndIf}
   ${EndIf}

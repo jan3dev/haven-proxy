@@ -121,16 +121,17 @@ proxy process**. This package's provider export (`createHaven`) is an `@ai-sdk/o
 provider whose HTTP layer is a custom `fetch` that does the Haven relay (attest + HPKE-encrypt +
 decrypt) locally and injects `X-Api-Key` itself.
 
-Run `haven-proxy login` once — it saves your key to `~/.haven-proxy/config.json` (mode 0600) and
-registers the Haven providers in your global OpenCode config, the same way every other OpenCode
-provider works. No env var, no manual JSON editing. Restart OpenCode, then pick any `haven/…` model
-from any directory.
+Run `haven-proxy login` once — it saves your key to `~/.haven-proxy/config.json` (mode 0600),
+registers the Haven providers in your global OpenCode config, and sets OpenCode's default model
+to `haven-local/gpt-oss-120b` (see "Default model" below — opt out with `--no-default-model`).
+No env var, no manual JSON editing. Restart OpenCode and it's ready in any directory.
 
 OpenCode's global config lives at **`~/.config/opencode/opencode.json` on every platform** — on
 Windows that is `C:\Users\<you>\.config\opencode\opencode.json`, *not* `%APPDATA%`. `$OPENCODE_CONFIG`,
 `$OPENCODE_CONFIG_DIR` and `$XDG_CONFIG_HOME` are honored if you've set them.
 
-`haven-proxy logout` reverses both: removes the saved key and removes the provider entries.
+`haven-proxy logout` reverses both: removes the saved key and removes the provider entries
+(including the default model, when it points at a Haven provider).
 
 Two entries get written, because there are two ways to reach Haven:
 
@@ -139,9 +140,20 @@ Two entries get written, because there are two ways to reach Haven:
 | `haven/…` | in-process — OpenCode loads this package and relays itself | no |
 | `haven-local/…` | plain HTTP to the bundled localhost proxy on `127.0.0.1:3301` | yes (`haven-proxy start` or the tray app) |
 
-Prefer `haven/…` — the relay runs inside OpenCode, so neither the CLI daemon nor the tray app
-needs to be running for those models. Pass `--port` to `login` if you run the proxy somewhere
-other than 3301.
+Pass `--port` to `login` if you run the proxy somewhere other than 3301.
+
+**Default model.** By default, `login` (and the tray app) also sets OpenCode's top-level `model`
+to `haven-local/gpt-oss-120b` — **this changes OpenCode's default model**. Why: the local proxy
+keeps the enclave attestation warm across sessions, so the first prompt is fast; the in-process
+`haven/…` path re-attests on the first prompt of every OpenCode session. Notes:
+
+- It assumes the proxy is running (`haven-proxy startup on`, or the tray app's launch-at-login).
+  Without it, the default model fails to connect — `haven/…` models still work.
+- A default you set by hand to another provider (e.g. `anthropic/…`) is **never overwritten**.
+- Opt out with `haven-proxy login --no-default-model`, the tray menu toggle, or the installer
+  checkbox; `--default-model` re-enables it.
+- OpenCode remembers the last-used model per project, so the default only applies to fresh
+  sessions/projects.
 
 **Manual setup** (if you prefer to manage `opencode.json` yourself, e.g. in a project file):
 
@@ -172,7 +184,8 @@ only for staging or local dev.
 `HAVEN_API_KEY` env var, then from `~/.haven-proxy/config.json`, so the key never lands in a config
 file you share or commit. Set it explicitly only if you want a different key per project.
 
-Restart OpenCode after editing, then pick the `haven/gpt-oss-120b` model.
+Restart OpenCode after editing, then pick the `haven-local/gpt-oss-120b` model (or `haven/gpt-oss-120b`
+for the proxy-less path).
 
 > If a project-level `opencode.json` (or a global `opencode.jsonc`) also defines a `haven` provider,
 > it overrides the global entry — OpenCode merges `config.json` → `opencode.json` → `opencode.jsonc`,
