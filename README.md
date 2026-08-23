@@ -198,9 +198,11 @@ for the proxy-less path).
 > writes the current models *and* prices into your config, so re-run `login` (or restart the tray
 > app) to pick up a retirement or a price change.
 
-> The `limit` values are best-effort defaults — adjust them to each model's real context/output
-> window if you hit truncation. `cost` is USD per 1M tokens and drives OpenCode's session cost
-> display.
+> `limit`, the capability flags and `cost` follow the same rule: whatever the backend publishes
+> on the pricing endpoint wins, the built-in values only fill the gaps, and a conservative default
+> limit is the last resort. So a new model — or a corrected context window — arrives on the next
+> `login`/restart without editing this file. `cost` is USD per 1M tokens and drives OpenCode's
+> session cost display.
 
 
 

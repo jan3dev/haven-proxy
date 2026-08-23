@@ -303,6 +303,46 @@ describe("ensureOpencodeProvider", () => {
     assert.ok(!readFileSync(opencodeConfigPath(), "utf8").includes("hvn1_"));
   });
 
+  test("catalog metadata lands flat on the model entry; sunset_on never does", () => {
+    const entry = {
+      id: "kimi-k3",
+      name: "Kimi K3 (Haven)",
+      limit: { context: 200000, output: 65536 },
+      cost: { input: 1.58, output: 5.51 },
+      capabilities: { tool_call: true, attachment: false, reasoning: true },
+      modalities: { input: ["text"], output: ["text"] },
+      status: "deprecated",
+      sunset_on: "2026-12-01",
+    };
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog: [entry] }).changed, true);
+
+    assert.deepEqual(read().provider.haven.models["kimi-k3"], {
+      name: "Kimi K3 (Haven)",
+      limit: { context: 200000, output: 65536 },
+      cost: { input: 1.58, output: 5.51 },
+      tool_call: true,
+      attachment: false,
+      reasoning: true,
+      modalities: { input: ["text"], output: ["text"] },
+      status: "deprecated",
+    });
+    assert.ok(!readFileSync(opencodeConfigPath(), "utf8").includes("sunset_on"));
+    // Proves sameEntry converged on the wider entry — no rewrite-forever loop.
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog: [entry] }).changed, false);
+  });
+
+  test("a capability change from the backend counts as stale and is repaired", () => {
+    const withCaps = (capabilities) =>
+      catalogOf().map((m) => (m.id === MODEL_IDS[0] ? { ...m, capabilities } : m));
+    saveOpencodeProvider(DEFAULT_BASE_URL, { catalog: withCaps({ tool_call: true }) });
+
+    const updated = withCaps({ tool_call: true, reasoning: true });
+    assert.equal(opencodeProviderStatus(DEFAULT_BASE_URL, { catalog: updated }).stale, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog: updated }).changed, true);
+    assert.equal(read().provider.haven.models[MODEL_IDS[0]].reasoning, true);
+    assert.equal(ensureOpencodeProvider(DEFAULT_BASE_URL, { catalog: updated }).changed, false);
+  });
+
   test("re-registers when the pinned baseURL no longer matches", () => {
     saveOpencodeProvider("https://staging.example.com");
     assert.equal(ensureOpencodeProvider("https://staging.example.com").changed, false);

@@ -320,12 +320,23 @@ export async function validateKey(havenApiRoot, apiKey) {
   }
 }
 
+// Optional metadata the backend may publish per model. Field names mirror the
+// OpenCode provider-model schema (which is where they end up), so the enums are
+// OpenCode's, not ours.
+const CAPABILITY_KEYS = ["tool_call", "attachment", "reasoning"];
+const MODALITIES = new Set(["text", "audio", "image", "video", "pdf"]);
+const STATUSES = new Set(["alpha", "beta", "deprecated", "active"]);
+
 // Probe the public pricing endpoint (no API key — it's world-readable). It is
 // also the model catalog: the backend lists only what it can actually serve, so
 // an id missing here is one that no longer runs. Decimals arrive as strings, so
 // parse defensively and drop anything malformed. Returns
-//   { ok: true,  models: [{ id, name, cost: { input, output } }] }
+//   { ok: true,  models: [{ id, name, cost: { input, output }, ...metadata }] }
 //   { ok: false, reason: "unreachable" | "bad_response" }
+// where metadata is any of { limit: { context?, output? }, capabilities,
+// modalities, status, sunset_on } the backend published AND we could validate.
+// Each metadata field is validated on its own and dropped alone on failure — a
+// bogus context_length must not delete a model the backend can serve.
 export async function fetchCatalog(havenApiRoot) {
   let entries;
   try {
@@ -341,6 +352,39 @@ export async function fetchCatalog(havenApiRoot) {
   // Number("") is 0, so blank strings must be rejected before conversion.
   const price = (v) =>
     (typeof v === "string" && v.trim() !== "") || typeof v === "number" ? Number(v) : NaN;
+  // Token limits follow the same string-or-number convention as costs.
+  const tokenLimit = (v) => {
+    const n = price(v);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const parseMetadata = (entry) => {
+    const meta = {};
+    const context = tokenLimit(entry.context_length);
+    const output = tokenLimit(entry.max_output);
+    if (context !== undefined || output !== undefined) {
+      meta.limit = {
+        ...(context !== undefined && { context }),
+        ...(output !== undefined && { output }),
+      };
+    }
+    const capabilities = {};
+    for (const key of CAPABILITY_KEYS) {
+      if (typeof entry.capabilities?.[key] === "boolean") capabilities[key] = entry.capabilities[key];
+    }
+    if (Object.keys(capabilities).length) meta.capabilities = capabilities;
+    const modalities = {};
+    for (const dir of ["input", "output"]) {
+      const list = entry.modalities?.[dir];
+      const valid = Array.isArray(list) ? list.filter((m) => MODALITIES.has(m)) : [];
+      if (valid.length) modalities[dir] = valid;
+    }
+    if (Object.keys(modalities).length) meta.modalities = modalities;
+    if (STATUSES.has(entry.status)) meta.status = entry.status;
+    if (typeof entry.sunset_on === "string" && !Number.isNaN(Date.parse(entry.sunset_on))) {
+      meta.sunset_on = entry.sunset_on;
+    }
+    return meta;
+  };
   const models = [];
   for (const entry of entries) {
     if (typeof entry?.id !== "string" || !entry.id) continue;
@@ -351,6 +395,7 @@ export async function fetchCatalog(havenApiRoot) {
       id: entry.id,
       name: typeof entry.name === "string" ? entry.name : "",
       cost: { input, output },
+      ...parseMetadata(entry),
     });
   }
   // An empty catalog reads the same as a shape we failed to parse, and neither is

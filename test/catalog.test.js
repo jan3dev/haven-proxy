@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCatalog, CATALOG_TTL_MS } from "../src/catalog.js";
-import { MODEL_IDS, DEFAULT_LIMIT } from "../src/defaults.js";
+import { resolveCatalog, CATALOG_TTL_MS, SUNSET_WARNING_MS } from "../src/catalog.js";
+import { MODELS, MODEL_IDS, DEFAULT_LIMIT } from "../src/defaults.js";
 
 const ROOT = "https://ankara.example.com/api/v1/haven";
 const NOW = 1_700_000_000_000;
@@ -73,8 +73,7 @@ describe("resolveCatalog", () => {
     ]);
   });
 
-  test("a known model keeps its built-in name and context limit", async () => {
-    // /pricing/ carries neither, so they have to come from the built-in list.
+  test("a known model keeps its built-in limit while /pricing/ doesn't publish one", async () => {
     const { models } = await withFetch(
       async () => jsonResponse([priced("gpt-oss-120b", "GPT-OSS 120B")]),
       () => resolveCatalog(ROOT, { now: NOW }),
@@ -82,6 +81,84 @@ describe("resolveCatalog", () => {
 
     assert.equal(models[0].name, "GPT-OSS 120B (Haven)");
     assert.deepEqual(models[0].limit, { context: 131072, output: 32768 });
+  });
+
+  test("backend-published name, limits and capabilities beat the built-in entry", async () => {
+    const { models } = await withFetch(
+      async () =>
+        jsonResponse([
+          {
+            ...priced("gpt-oss-120b", "GPT-OSS 120B Turbo"), // renamed upstream
+            context_length: 262144,
+            max_output: 65536,
+            capabilities: { reasoning: false, attachment: true },
+          },
+        ]),
+      () => resolveCatalog(ROOT, { now: NOW }),
+    );
+
+    assert.equal(models[0].name, "GPT-OSS 120B Turbo (Haven)");
+    assert.deepEqual(models[0].limit, { context: 262144, output: 65536 });
+    // Backend keys override; built-in tool_call fills the gap it left.
+    assert.deepEqual(models[0].capabilities, { tool_call: true, reasoning: false, attachment: true });
+  });
+
+  test("partial metadata falls back per field, not per entry", async () => {
+    const { models } = await withFetch(
+      async () => jsonResponse([{ ...priced("kimi-k3", "Kimi K3"), context_length: 262144 }]),
+      () => resolveCatalog(ROOT, { now: NOW }),
+    );
+
+    // Backend context + built-in output (kimi-k3's built-in entry says 65536).
+    assert.deepEqual(models[0].limit, { context: 262144, output: 65536 });
+  });
+
+  test("retiring lists deprecated and soon-sunsetting models, not far-future ones", async () => {
+    const soon = new Date(NOW + SUNSET_WARNING_MS - 1000).toISOString().slice(0, 10);
+    const far = new Date(NOW + SUNSET_WARNING_MS + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const result = await withFetch(
+      async () =>
+        jsonResponse([
+          { ...priced("old-model", "Old"), status: "deprecated" },
+          { ...priced("fading-model", "Fading"), sunset_on: soon },
+          { ...priced("healthy-model", "Healthy"), status: "active", sunset_on: far },
+        ]),
+      () => resolveCatalog(ROOT, { now: NOW }),
+    );
+
+    assert.deepEqual(result.retiring, [
+      { id: "old-model", status: "deprecated" },
+      { id: "fading-model", sunset_on: soon },
+    ]);
+    // Warn, never block: a retiring model still counts as servable.
+    assert.deepEqual(result.servableIds, ["old-model", "fading-model", "healthy-model"]);
+  });
+
+  test("retiring flows from the cache too, and the built-in fallback reports none", async () => {
+    writeCache([{ ...priced("old-model", "Old"), status: "deprecated" }], NOW - 1000);
+    const cached = await withFetch(offline, () => resolveCatalog(ROOT, { now: NOW }));
+    assert.deepEqual(cached.retiring, [{ id: "old-model", status: "deprecated" }]);
+
+    rmSync(process.env.HAVEN_CATALOG);
+    const builtin = await withFetch(offline, () => resolveCatalog(ROOT, { now: NOW }));
+    assert.equal(builtin.source, "builtin");
+    assert.deepEqual(builtin.retiring, []);
+  });
+
+  // Backward-compatibility guarantee: with no metadata published (today's live
+  // backend shape), the merged entry is exactly what the pre-metadata proxy
+  // produced — no new keys, not even empty ones.
+  test("a metadata-free row merges identically to before for an unannotated model", async () => {
+    const builtin = MODELS.find((m) => !m.capabilities); // gemma4-31b today
+    const bare = builtin.name.replace(" (Haven)", "");
+    const { models } = await withFetch(
+      async () => jsonResponse([priced(builtin.id, bare)]),
+      () => resolveCatalog(ROOT, { now: NOW }),
+    );
+
+    assert.deepEqual(models, [
+      { id: builtin.id, name: builtin.name, limit: builtin.limit, cost: { input: 1.5, output: 5.25 } },
+    ]);
   });
 
   test("offline with a fresh cache: serve it, and still reject against it", async () => {

@@ -65,6 +65,38 @@ async function pollUntilServed(port, want) {
   return listModels(port);
 }
 
+describe("warmup retirement warning", () => {
+  test("warns once about deprecated models, keeps serving them", async () => {
+    globalThis.fetch = async (input) => {
+      if (!String(input).includes("/pricing/")) throw new TypeError("fetch failed");
+      return new Response(
+        JSON.stringify([
+          { id: "old-model", name: "Old", input_cost: "1", output_cost: "2", status: "deprecated" },
+          { id: "fresh-model", name: "Fresh", input_cost: "1", output_cost: "2" },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const warns = [];
+    const log = { info() {}, warn: (m) => warns.push(m), error() {} };
+    const srv = createProxyServer({ apiKey: "hvn1_test", baseURL: BASE, log });
+    await srv.listen({ port: 0 });
+    const { port } = srv.server.address(); // listen() echoes the requested port; 0 means "pick one"
+    try {
+      // warmup is fire-and-forget after listen resolves — poll for its warning.
+      for (let i = 0; i < 100 && !warns.some((m) => m.includes("old-model")); i++) await sleep(10);
+      const retirement = warns.filter((m) => m.includes("Deprecated or sunsetting"));
+      assert.equal(retirement.length, 1, `expected one retirement warning, got: ${warns.join(" | ")}`);
+      assert.match(retirement[0], /old-model/);
+      assert.ok(!retirement[0].includes("fresh-model"), "healthy models must not be named");
+      // Warn, never block: the deprecated model is still advertised.
+      assert.deepEqual(await listModels(port), ["old-model", "fresh-model"]);
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
 describe("proxy catalog top-up", () => {
   test("a failed fetch is retried within minutes, not held for the full TTL", async (t) => {
     t.mock.timers.enable({ apis: ["Date"] });
