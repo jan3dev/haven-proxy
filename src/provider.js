@@ -96,6 +96,11 @@ export function createHaven(options = {}) {
     .then(({ servableIds }) => relay.setServableModels(servableIds))
     .catch(() => {});
 
+  // Pre-warm the attestation in the background so it overlaps with OpenCode's
+  // startup instead of delaying the first prompt. Failure is fine here — the
+  // first relay call retries it and owns the error handling.
+  relay.ready().catch(() => {});
+
   // Custom fetch: the AI SDK calls this with a full URL and a JSON body string.
   // We only handle the chat/completions hop; anything else falls back untouched.
   const havenFetch = async (input, init = {}) => {
