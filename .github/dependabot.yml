@@ -1,0 +1,48 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/app"
+    schedule:
+      interval: quarterly
+      time: "07:00"
+    versioning-strategy: increase-if-necessary
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "[DEPS]"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns: ["*"]
+      patch-updates:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: quarterly
+      time: "07:00"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "[DEPS]"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns: ["*"]
+      patch-updates:
+        applies-to: version-updates
+        patterns: ["*"]
