@@ -42,7 +42,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.22.2 # SEA embeds this Node; bump on each Node security release
 
       - run: npm ci
 
@@ -121,7 +121,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.22.2 # SEA embeds this Node; bump on each Node security release
 
       # Root deps first: app/node_modules/haven-proxy is a file:.. symlink whose
       # imports (the SecureClient SDK, @ai-sdk/*) resolve through the repo root's

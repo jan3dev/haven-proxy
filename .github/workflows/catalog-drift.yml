@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.22.2
 
       # The script imports src/relay.js, which needs the installed SDK.
       - run: npm ci
