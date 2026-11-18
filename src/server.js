@@ -13,7 +13,7 @@ import { createSecureRelay, sseLinesFor, USAGE_HEADER, DEFAULT_TIMEOUT_MS } from
 import { DEFAULT_BASE_URL, DEFAULT_PORT, MODEL_IDS } from "./defaults.js";
 import { resolveCatalog, CATALOG_TTL_MS, CATALOG_RETRY_MS } from "./catalog.js";
 
-export const MAX_BODY_BYTES = 256 * 1024; // mirror Haven's CHAT_COMPLETIONS_MAX_PAYLOAD_BYTES
+export const MAX_BODY_BYTES = 8 * 1024 * 1024; // mirror Haven's RELAY_MAX_PAYLOAD_BYTES
 export { DEFAULT_PORT };
 export const DEFAULT_MODELS = MODEL_IDS;
 
